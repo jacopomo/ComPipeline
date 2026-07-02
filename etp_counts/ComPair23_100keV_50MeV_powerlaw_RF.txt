@@ -1,0 +1,15 @@
+
+MC simulated events: {'COMP': 5924, 'PAIR': 3991, 'PHOT': 74, 'RAYL': 11}
+
+Predicted event types: {'MU': 3526, 'UN': 3112, 'PA': 1707, 'CO': 1655}
+
+Total matches: 2487
+
+Match type breakdown: {'COMP': 1279, 'PAIR': 1208, 'PHOT': 0, 'RAYL': 0, 'BACK': 0}
+
+-------------------------------------------------
+               Predicted COMP      Predicted PAIR
+Actual COMP     1279 - 72.06%        496 - 27.94%
+Actual PAIR      372 - 23.54%       1208 - 76.46%
+-------------------------------------------------
+    

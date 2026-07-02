@@ -1,0 +1,46 @@
+///////////////////////////////////// ACD ONLY /////////////////////////////////////
+MC simulated events: {'COMP': 5924, 'PAIR': 3991, 'PHOT': 74, 'RAYL': 11}
+
+Predicted event types: {'CO': 3574, 'UN': 3112, 'PA': 2222, 'PH': 1092}
+
+Total matches: 3532
+
+Match type breakdown: {'COMP': 2069, 'PAIR': 1438, 'PHOT': 25, 'RAYL': 0, 'BACK': 0}
+
+-------------------------------------------------
+               Predicted COMP      Predicted PAIR
+Actual COMP     2069 - 72.62%        780 - 27.38%
+Actual PAIR     1499 - 51.04%       1438 - 48.96%
+-------------------------------------------------
+
+////////////////////////////////// RANDOM FOREST //////////////////////////////////
+
+MC simulated events: {'COMP': 5924, 'PAIR': 3991, 'PHOT': 74, 'RAYL': 11}
+
+Predicted event types: {'MU': 3526, 'UN': 3112, 'PA': 1707, 'CO': 1655}
+
+Total matches: 2487
+
+Match type breakdown: {'COMP': 1279, 'PAIR': 1208, 'PHOT': 0, 'RAYL': 0, 'BACK': 0}
+
+-------------------------------------------------
+               Predicted COMP      Predicted PAIR
+Actual COMP     1279 - 72.06%        496 - 27.94%
+Actual PAIR      372 - 23.54%       1208 - 76.46%
+-------------------------------------------------
+
+////////////////////////////////////// PCA //////////////////////////////////////
+
+MC simulated events: {'COMP': 5924, 'PAIR': 3991, 'PHOT': 74, 'RAYL': 11}
+
+Predicted event types: {'MU': 4672, 'UN': 3112, 'CO': 1255, 'PA': 961}
+
+Total matches: 1603
+
+Match type breakdown: {'COMP': 928, 'PAIR': 675, 'PHOT': 0, 'RAYL': 0, 'BACK': 0}
+
+-------------------------------------------------
+               Predicted COMP      Predicted PAIR
+Actual COMP      928 - 76.57%        284 - 23.43%
+Actual PAIR      323 - 32.36%        675 - 67.64%
+-------------------------------------------------

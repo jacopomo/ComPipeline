@@ -1,0 +1,24 @@
+# Example run for Cosima
+
+# Global parameters
+Version         1
+Geometry        ./Geometry/ComPair_23/ComPair23.geo.setup
+
+# Physics list
+PhysicsListEM               LivermorePol
+
+# Output formats
+StoreSimulationInfo         all
+
+# Run & source parameters
+Run SpaceSim
+SpaceSim.FileName           ComPair23_100keV_50MeV_powerlaw
+SpaceSim.Triggers           10000
+
+SpaceSim.Source Linear
+Linear.ParticleType        1
+Linear.Beam                FarFieldAreaSource 0 60 0 360
+#Linear.Spectrum            Linear 1000.0 50000.0
+Linear.Spectrum 	   PowerLaw 100.0 50000.0 1.0
+Linear.Flux                1.0
+

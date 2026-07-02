@@ -14,6 +14,103 @@ import numpy as np
     
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
 
+
+def plot_type_classification_comparison(true_by_category, miss_by_category, all_by_category, output_path, xlabel, title, bins=50, log_y=True, categories=None):
+    """Create a 2x2 comparison layout with counts and misclassification ratio panels."""
+
+    if categories is None:
+        categories = list(true_by_category.keys())
+
+    palette = [
+        ("royalblue", "darkblue"),
+        ("forestgreen", "darkgreen"),
+        ("darkorchid", "purple"),
+    ]
+    colors = {category: palette[idx % len(palette)] for idx, category in enumerate(categories)}
+
+    def _plot_hist_panel(ax, data_by_category, panel_title):
+        for category in categories:
+            values = data_by_category.get(category, [])
+            if not values:
+                continue
+            color, edgecolor = colors[category]
+            ax.hist(
+                values,
+                bins=bins,
+                alpha=0.45,
+                color=color,
+                edgecolor=edgecolor,
+                histtype="stepfilled",
+                label=f"{category} ({len(values)})",
+            )
+
+        ax.set_title(panel_title, fontsize=11, fontweight="bold")
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel("Number of Events", fontsize=10)
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.legend(loc="upper right", fontsize=9)
+        if log_y:
+            ax.set_yscale("log")
+
+    def _plot_ratio_panel(ax):
+        for category in categories:
+            true_values = true_by_category.get(category, [])
+            miss_values = miss_by_category.get(category, [])
+            if not true_values and not miss_values:
+                continue
+
+            combined_values = true_values + miss_values
+            if not combined_values:
+                continue
+            
+            # Must be binned in the same way, using the "true's" bins
+            counts_true, bin_edges = np.histogram(true_values, bins=bins)
+            counts_miss, _ = np.histogram(miss_values, bins=bin_edges)
+            counts_total = counts_true + counts_miss
+            ratios = np.divide(
+                counts_miss,
+                counts_total,
+                out=np.zeros_like(counts_total, dtype=float),
+                where=counts_total > 0,
+            )
+            centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+            color, _ = colors[category]
+            mean_misclassification = len(miss_values) / len(combined_values) if combined_values else 0.0
+
+            ax.scatter(centers, ratios, color=color, label=f"{category} (mean: {mean_misclassification:.2f})")
+            ax.axhline(
+                mean_misclassification,
+                color=color,
+                linestyle="--",
+                linewidth=1.2,
+                alpha=0.8,
+            )
+
+        ax.set_title("Misclassified / Total", fontsize=11, fontweight="bold")
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel("Fraction Misclassified", fontsize=10)
+        ax.set_ylim(0, 1.05)
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        ax.legend(loc="upper right", fontsize=9)
+
+    fig = plt.figure(figsize=(14, 10))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1], hspace=0.28, wspace=0.22)
+    ax_true = fig.add_subplot(gs[0, 0])
+    ax_miss = fig.add_subplot(gs[0, 1])
+    ax_all = fig.add_subplot(gs[1, 0])
+    ax_ratio = fig.add_subplot(gs[1, 1])
+
+    _plot_hist_panel(ax_true, true_by_category, "Correctly Classified")
+    _plot_hist_panel(ax_miss, miss_by_category, "Misclassified")
+    _plot_hist_panel(ax_all, all_by_category, "Correctly + Misclassified")
+    _plot_ratio_panel(ax_ratio)
+
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
 class EventClassifierPipeline:
 
     def __init__(self, model_traced_path, onlyACDVeto=True, random_forest_path=None, lookup_path=None):
@@ -36,10 +133,10 @@ class EventClassifierPipeline:
         self.model.load_state_dict(state_dict, strict=True)
         self.model.eval()  
 
-    def extract_hit_data(self, event, detId=None):      
+    def extract_hit_data(self, event, detId=None):
         nhits = event.GetNHTs()
         if nhits == 0:
-            return None
+            return None, 0
 
         data = torch.zeros([1, 4, nhits])
         if detId is None:
@@ -48,17 +145,20 @@ class EventClassifierPipeline:
                 data[0, 1, i] = event.GetHTAt(i).GetPosition().Y()
                 data[0, 2, i] = event.GetHTAt(i).GetPosition().Z()
                 data[0, 3, i] = event.GetHTAt(i).GetEnergy()
-            return data 
-        else:
-            j=0
-            for i in range(nhits):
-                if event.GetHTAt(i).GetDetectorType() == detId:
-                    data[0, 0, j] = event.GetHTAt(i).GetPosition().X()
-                    data[0, 1, j] = event.GetHTAt(i).GetPosition().Y()
-                    data[0, 2, j] = event.GetHTAt(i).GetPosition().Z()
-                    data[0, 3, j] = event.GetHTAt(i).GetEnergy()
-                    j += 1
-            return data[:, :, :j] if j > 0 else None
+            return data, nhits
+
+        n_selected = 0
+        for i in range(nhits):
+            if event.GetHTAt(i).GetDetectorType() == detId:
+                data[0, 0, n_selected] = event.GetHTAt(i).GetPosition().X()
+                data[0, 1, n_selected] = event.GetHTAt(i).GetPosition().Y()
+                data[0, 2, n_selected] = event.GetHTAt(i).GetPosition().Z()
+                data[0, 3, n_selected] = event.GetHTAt(i).GetEnergy()
+                n_selected += 1
+
+        if n_selected > 0:
+            return data[:, :, :n_selected], n_selected
+        return None, 0
     
 
     def signal_background_classifier(self, event, onlyACDVeto=True, thr=0.99):
@@ -79,7 +179,7 @@ class EventClassifierPipeline:
             return "MU", 0.99  
 
         if not onlyACDVeto:
-            data = self.extract_hit_data(event, 1)
+            data, _ = self.extract_hit_data(event, 1)
             prob = pca.analyze(data, event.GetTotalEnergyDeposit(), rf=self.pca_classifier, thr=thr)
             if prob > 0.5:
                 return "SIGNAL", prob
@@ -104,7 +204,7 @@ class EventClassifierPipeline:
             return "PH", 0.50  # 'PH' for Photoelectric
 
         # 2. If not Photoelectric, extract hit data and execute PointNet
-        data_input = self.extract_hit_data(event)
+        data_input, _ = self.extract_hit_data(event)
 
         if data_input is None or data_input.shape[2] == 0:
             return "UN", 1.00
@@ -184,13 +284,22 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         prob_CO_l2 = []
         prob_UN_l2 = []
 
-        energy_true_PH_wrong = []
-        energy_true_PA_wrong = []
-        energy_true_CO_wrong = []
+        incident_energy_PH_true, incident_energy_PH_miss = [], []
+        incident_energy_PA_true, incident_energy_PA_miss = [], []
+        incident_energy_CO_true, incident_energy_CO_miss = [], []
 
-        zpos_true_PH_wrong = []
-        zpos_true_PA_wrong = []
-        zpos_true_CO_wrong = []
+        zpos_PH_true, zpos_PH_miss = [], []
+        zpos_PA_true, zpos_PA_miss = [], []
+        zpos_CO_true, zpos_CO_miss = [], []
+
+        E_deposited_tra_true, E_deposited_tra_miss = [], []
+        E_deposited_cal_true, E_deposited_cal_miss = [], []
+        E_deposited_tot_true, E_deposited_tot_miss = [], []
+
+        nhits_tra_true, nhits_tra_miss = [], []
+        nhits_cal_true, nhits_cal_miss = [], []
+        nhits_tot_true, nhits_tot_miss = [], []
+
 
         confusion_matrix = np.zeros((3, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2}
@@ -247,21 +356,72 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                                 if Event.GetNIAs() > 0:
                                     ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0
                                     zpos = Event.GetIAAt(1).GetPosition().Z()
-                                    
-                                # Canale 1: True Photo misclassified (CO o PA)
-                                if mc_process == "PHOT" and event_type != "PH":
-                                    energy_true_PH_wrong.append(ia_e)
-                                    zpos_true_PH_wrong.append(zpos)
-                                    
-                                # Canale 2: True Pair misclassified (PH o CO)
-                                elif mc_process == "PAIR" and event_type != "PA":
-                                    energy_true_PA_wrong.append(ia_e)
-                                    zpos_true_PA_wrong.append(zpos)
-                                    
-                                # Canale 3: True Compton misclassified (PA o PH)
-                                elif mc_process == "COMP" and event_type != "CO":
-                                    energy_true_CO_wrong.append(ia_e)
-                                    zpos_true_CO_wrong.append(zpos)
+
+                                    hit_data_tra, n_hits_tra = pipeline.extract_hit_data(Event, detId=1)
+                                    hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
+                                    edep_tra = hit_data_tra[0, 3, :].sum().item() if hit_data_tra is not None else 0.0
+                                    edep_cal = hit_data_cal[0, 3, :].sum().item() if hit_data_cal is not None else 0.0
+                                # Canale 1: True Photo
+                                if mc_process == "PHOT":
+                                    if event_type == "PH":
+                                        incident_energy_PH_true.append(ia_e)
+                                        zpos_PH_true.append(zpos)
+                                        E_deposited_tra_true.append(edep_tra)
+                                        E_deposited_cal_true.append(edep_cal)
+                                        E_deposited_tot_true.append(edep_tra+edep_cal)
+                                        nhits_tra_true.append(n_hits_tra)
+                                        nhits_cal_true.append(n_hits_cal)
+                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                    else:
+                                        incident_energy_PH_miss.append(ia_e)
+                                        zpos_PH_miss.append(zpos)
+                                        E_deposited_tra_miss.append(edep_tra)
+                                        E_deposited_cal_miss.append(edep_cal)
+                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
+                                        nhits_tra_miss.append(n_hits_tra)
+                                        nhits_cal_miss.append(n_hits_cal)
+                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
+                                # Canale 2: True PAIR
+                                if mc_process == "PAIR":
+                                    if event_type == "PA":
+                                        incident_energy_PA_true.append(ia_e)
+                                        zpos_PA_true.append(zpos)
+                                        E_deposited_tra_true.append(edep_tra)
+                                        E_deposited_cal_true.append(edep_cal)
+                                        E_deposited_tot_true.append(edep_tra+edep_cal)
+                                        nhits_tra_true.append(n_hits_tra)
+                                        nhits_cal_true.append(n_hits_cal)
+                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                    else:
+                                        incident_energy_PA_miss.append(ia_e)
+                                        zpos_PA_miss.append(zpos)
+                                        E_deposited_tra_miss.append(edep_tra)
+                                        E_deposited_cal_miss.append(edep_cal)
+                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
+                                        nhits_tra_miss.append(n_hits_tra)
+                                        nhits_cal_miss.append(n_hits_cal)
+                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
+
+                                # Canale 3: True COMP
+                                if mc_process == "COMP":
+                                    if event_type == "CO":
+                                        incident_energy_CO_true.append(ia_e)
+                                        zpos_CO_true.append(zpos)
+                                        E_deposited_tra_true.append(edep_tra)
+                                        E_deposited_cal_true.append(edep_cal)
+                                        E_deposited_tot_true.append(edep_tra+edep_cal)
+                                        nhits_tra_true.append(n_hits_tra)
+                                        nhits_cal_true.append(n_hits_cal)
+                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                    else:
+                                        incident_energy_CO_miss.append(ia_e)
+                                        zpos_CO_miss.append(zpos)
+                                        E_deposited_tra_miss.append(edep_tra)
+                                        E_deposited_cal_miss.append(edep_cal)
+                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
+                                        nhits_tra_miss.append(n_hits_tra)
+                                        nhits_cal_miss.append(n_hits_cal)
+                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
                                     
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
@@ -378,67 +538,129 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 print(f"[OK] Confusion Matrix : {matrix_path}")
 
             if debug:
-                # --- NUOVO PLOT 4 SPETTRO ENERGETICO DEGLI ERRORI PER CATEGORIA ---
-                plt.figure(figsize=(10, 6))
-                bins = 50
-                
-                # Plottiamo le tre distribuzioni sovrapposte usando 'step' o barre trasparenti
-                plt.hist(energy_true_CO_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Compton pred. PA/PH (Total: {len(energy_true_CO_wrong)})', 
-                         color='royalblue', histtype='stepfilled', edgecolor='darkblue')
-                         
-                plt.hist(energy_true_PA_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Pair pred. PH/CO (Total: {len(energy_true_PA_wrong)})', 
-                         color='forestgreen', histtype='stepfilled', edgecolor='darkgreen')
-                         
-                plt.hist(energy_true_PH_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Photo pred. CO/PA (Total: {len(energy_true_PH_wrong)})', 
-                         color='darkorchid', histtype='stepfilled', edgecolor='purple')
-                
-                plt.title('Energy Distribution of Misclassified Events (Layer 2)', fontsize=12, fontweight='bold')
-                plt.xlabel('Incident Energy (MeV)', fontsize=11)
-                plt.ylabel('Number of Wrong Predicted Events', fontsize=11)
-                plt.grid(True, which="both", linestyle='--', alpha=0.5)
-                plt.legend(loc='upper right', fontsize=10)
-                
-                # Consigliato in fisica per gli spettri energetici a larga banda
-                plt.yscale('log') 
-                
-                energy_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_energy.png"
-                plt.savefig(energy_plot_path, dpi=300)
-                plt.close()
-                print(f"[OK] Spettro degli errori per categoria salvato in: {energy_plot_path}")
+                # Incident energy 4-panel subplot
+                energy_true_by_category = {
+                    "CO": incident_energy_CO_true,
+                    "PA": incident_energy_PA_true,
+                    "PH": incident_energy_PH_true,
+                }
+                energy_miss_by_category = {
+                    "CO": incident_energy_CO_miss,
+                    "PA": incident_energy_PA_miss,
+                    "PH": incident_energy_PH_miss,
+                }
+                energy_all_by_category = {
+                    "CO": incident_energy_CO_true + incident_energy_CO_miss,
+                    "PA": incident_energy_PA_true + incident_energy_PA_miss,
+                    "PH": incident_energy_PH_true + incident_energy_PH_miss,
+                }
 
-                plt.figure(figsize=(10, 6))
-                bins = 50
+                energy_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_energy.png"
+                energy_bins = np.arange(0, 51, 1) # 50 1 MeV bins
+                plot_type_classification_comparison(
+                    true_by_category=energy_true_by_category,
+                    miss_by_category=energy_miss_by_category,
+                    all_by_category=energy_all_by_category,
+                    output_path=energy_plot_path,
+                    xlabel="Incident Energy (MeV)",
+                    title="Incident Energy Distribution by Category (Layer 2)",
+                    bins=energy_bins,
+                    log_y=True,
+                )
+                print(f"[OK] Spettro degli errori per categoria salvato in: {energy_plot_path}")
                 
-                plt.hist(zpos_true_CO_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Compton pred. PA/PH (Total: {len(zpos_true_CO_wrong)})', 
-                         color='royalblue', histtype='stepfilled', edgecolor='darkblue')
-                         
-                plt.hist(zpos_true_PA_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Pair pred. PH/CO (Total: {len(zpos_true_PA_wrong)})', 
-                         color='forestgreen', histtype='stepfilled', edgecolor='darkgreen')
-                         
-                plt.hist(zpos_true_PH_wrong, bins=bins, alpha=0.5, 
-                         label=f'True Photo pred. CO/PA (Total: {len(zpos_true_PH_wrong)})', 
-                         color='darkorchid', histtype='stepfilled', edgecolor='purple')
+                # Incident zpos 4-panel subplot
+                zpos_true_by_category = {
+                    "CO": zpos_CO_true,
+                    "PA": zpos_PA_true,
+                    "PH": zpos_PH_true,
+                }
+                zpos_miss_by_category = {
+                    "CO": zpos_CO_miss,
+                    "PA": zpos_PA_miss,
+                    "PH": zpos_PH_miss,
+                }
+                zpos_all_by_category = {
+                    "CO": zpos_CO_true + zpos_CO_miss,
+                    "PA": zpos_PA_true + zpos_PA_miss,
+                    "PH": zpos_PH_true + zpos_PH_miss,
+                }
                 
-                plt.title('Z Vertex Distribution of Misclassified Events (Layer 2)', fontsize=12, fontweight='bold')
-                plt.xlabel('Incidence Z Position (cm)', fontsize=11)
-                plt.ylabel('Number of Wrong Predicted Events', fontsize=11)
-                plt.grid(True, which="both", linestyle='--', alpha=0.5)
-                plt.legend(loc='upper right', fontsize=10)
-                
-                # Per la coordinata spaziale Z di solito si preferisce la scala lineare, 
-                # ma se vedi picchi enormi puoi scommentare la riga sotto:
-                # plt.yscale('log') 
-                
+                z_bins = np.linspace(-15, 30, 51) # 50 equally spaced bins defined for consistency
                 zpos_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_zpos.png"
-                plt.savefig(zpos_plot_path, dpi=300)
-                plt.close()
+                plot_type_classification_comparison(
+                    true_by_category=zpos_true_by_category,
+                    miss_by_category=zpos_miss_by_category,
+                    all_by_category=zpos_all_by_category,
+                    output_path=zpos_plot_path,
+                    xlabel="Incidence Z Position (cm)",
+                    title="Z Vertex Distribution by Category (Layer 2)",
+                    bins=z_bins,
+                    log_y=False,
+                )
                 print(f"[OK] Grafico delle posizioni Z degli errori salvato in: {zpos_plot_path}")
                 
+                # Deposited energy 4-panel subplot
+                edep_true_by_category = {
+                    "TRA": E_deposited_tra_true,
+                    "CAL": E_deposited_cal_true,
+                    "TOT": E_deposited_tot_true,
+                }
+                edep_miss_by_category = {
+                    "TRA": E_deposited_tra_miss,
+                    "CAL": E_deposited_cal_miss,
+                    "TOT": E_deposited_tot_miss,
+                }
+                edep_tot_by_category = {
+                    "TRA": E_deposited_tra_true + E_deposited_tra_miss,
+                    "CAL": E_deposited_cal_true + E_deposited_cal_miss,
+                    "TOT": E_deposited_tot_true + E_deposited_tot_miss,
+                }
+
+                edep_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_edep.png"
+                plot_type_classification_comparison(
+                    true_by_category=edep_true_by_category,
+                    miss_by_category=edep_miss_by_category,
+                    all_by_category=edep_tot_by_category,
+                    output_path=edep_plot_path,
+                    xlabel="Deposited energy (MeV)",
+                    title="Deposited Energy Distribution by Detector (Layer 2)",
+                    bins=50,
+                    log_y=False,
+                    categories=["TRA", "CAL", "TOT"],
+                )
+                print(f"[OK] Grafico delle energie depositate degli errori salvato in: {edep_plot_path}")
+
+                # Deposited energy 4-panel subplot
+                nhits_true_by_category = {
+                    "TRA": nhits_tra_true,
+                    "CAL": nhits_cal_true,
+                    "TOT": nhits_tot_true,
+                }
+                nhits_miss_by_category = {
+                    "TRA": nhits_tra_miss,
+                    "CAL": nhits_cal_miss,
+                    "TOT": nhits_tot_miss,
+                }
+                nhits_tot_by_category = {
+                    "TRA": nhits_tra_true + nhits_tra_miss,
+                    "CAL": nhits_cal_true + nhits_cal_miss,
+                    "TOT": nhits_tot_true + nhits_tot_miss,
+                }
+
+                nhits_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png"
+                plot_type_classification_comparison(
+                    true_by_category=nhits_true_by_category,
+                    miss_by_category=nhits_miss_by_category,
+                    all_by_category=nhits_tot_by_category,
+                    output_path=edep_plot_path,
+                    xlabel="Number of hits",
+                    title="Distribution of Number of Hits by Detector (Layer 2)",
+                    bins=50,
+                    log_y=False,
+                    categories=["TRA", "CAL", "TOT"],
+                )
+                print(f"[OK] Grafico delle nhits degli errori salvato in: {nhits_plot_path}")
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(

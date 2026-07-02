@@ -77,7 +77,8 @@ def plot_type_classification_comparison(true_by_category, miss_by_category, all_
             color, _ = colors[category]
             mean_misclassification = len(miss_values) / len(combined_values) if combined_values else 0.0
 
-            ax.scatter(centers, ratios, color=color, label=f"{category} (mean: {mean_misclassification:.2f})")
+            dy = np.sqrt(ratios*(1-ratios)/len(combined_values)) if combined_values else 0.0
+            ax.errorbar(centers, ratios, dy, color=color, fmt=".", label=f"{category} (mean: {mean_misclassification:.2f})")
             ax.axhline(
                 mean_misclassification,
                 color=color,
@@ -617,6 +618,22 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     "TOT": E_deposited_tot_true + E_deposited_tot_miss,
                 }
 
+                # Extract all the integer values from the dictionaries and flatten
+                all_values = []
+                for d in [edep_true_by_category, edep_miss_by_category, edep_tot_by_category]:
+                    for values_list in d.values():
+                        if values_list:
+                            all_values.extend(values_list)
+
+                # Safeguard in case ALL dictionaries were empty
+                if all_values:
+                    bins_min = min(all_values)
+                    bins_max = max(all_values)
+                    edep_bins = np.linspace(bins_min, bins_max, 51)
+                else:
+                    print("Warning: No deposited energy found!")
+                    edep_bins = 50  # Default fallback
+
                 edep_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_edep.png"
                 plot_type_classification_comparison(
                     true_by_category=edep_true_by_category,
@@ -625,7 +642,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     output_path=edep_plot_path,
                     xlabel="Deposited energy (MeV)",
                     title="Deposited Energy Distribution by Detector (Layer 2)",
-                    bins=50,
+                    bins=edep_bins,
                     log_y=False,
                     categories=["TRA", "CAL", "TOT"],
                 )
@@ -647,16 +664,32 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     "CAL": nhits_cal_true + nhits_cal_miss,
                     "TOT": nhits_tot_true + nhits_tot_miss,
                 }
+                
+                # Extract all the integer values from the dictionaries and flatten
+                all_values = []
+                for d in [nhits_true_by_category, nhits_miss_by_category, nhits_tot_by_category]:
+                    for values_list in d.values():
+                        if values_list:
+                            all_values.extend(values_list)
+
+                # Safeguard in case ALL dictionaries were empty
+                if all_values:
+                    bins_min = int(min(all_values))
+                    bins_max = int(max(all_values))
+                    nhits_bins = np.linspace(bins_min, bins_max, 51)
+                else:
+                    print("Warning: No hit counts found!")
+                    nhits_bins = 50  # Default fallback
 
                 nhits_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png"
                 plot_type_classification_comparison(
                     true_by_category=nhits_true_by_category,
                     miss_by_category=nhits_miss_by_category,
                     all_by_category=nhits_tot_by_category,
-                    output_path=edep_plot_path,
+                    output_path=nhits_plot_path,
                     xlabel="Number of hits",
                     title="Distribution of Number of Hits by Detector (Layer 2)",
-                    bins=50,
+                    bins=nhits_bins,
                     log_y=False,
                     categories=["TRA", "CAL", "TOT"],
                 )

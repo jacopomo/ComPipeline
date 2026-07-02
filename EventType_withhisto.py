@@ -4,8 +4,6 @@ import time
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import ROOT as M
 import torch
 import pca
@@ -63,7 +61,7 @@ class EventClassifierPipeline:
             return data[:, :, :j] if j > 0 else None
     
 
-    def signal_background_classifier(self, event, onlyACDVeto=True, rf=True, thr=0.99):
+    def signal_background_classifier(self, event, onlyACDVeto=True, thr=0.99):
         """First layer: Separates signal from background"""
         
         if not event:
@@ -71,21 +69,21 @@ class EventClassifierPipeline:
             
         nhits = event.GetNHTs()
         if nhits == 0:
-            return "ZH", 1.00
+            return "UN", 1.00
 
         nhits_ACD  = 0
         for i in range(nhits):
             if event.GetHTAt(i).GetDetectorType() == 4:
                 nhits_ACD += 1
         if nhits_ACD > 0:  
-            return "BK", 0.99  
+            return "MU", 0.99  
 
         if not onlyACDVeto:
             data = self.extract_hit_data(event, 1)
             prob = pca.analyze(data, event.GetTotalEnergyDeposit(), rf=self.pca_classifier, thr=thr)
             if prob > 0.5:
                 return "SIGNAL", prob
-            return "BK", 1.-prob
+            return "MU", 1.-prob
         else:
             return "SIGNAL", 1.00
 
@@ -97,18 +95,9 @@ class EventClassifierPipeline:
             return "UN", 1.00
         
         nhits = event.GetNHTs()
-        #for next iteration
-        #nhits_tracker = 0     
-        #nhits_calorimeter = 0 
-        #for i in range(nhits):
-        #    det_type = event.GetHTAt(i).GetDetectorType()
-        #    if det_type == 1:
-        #        nhits_tracker += 1
-        #    elif det_type == 2:
-        #        nhits_calorimeter += 1
                 
         if nhits == 0:
-            return "ZH", 1.00
+            return "UN", 1.00
 
         # 1.Cut for  Photoelectric effect (PHOT)
         if not nhits > 2:
@@ -130,20 +119,6 @@ class EventClassifierPipeline:
             return "CO", 1.0 - prob  # 'CO' for Compton Scattering
 
         return "UN", 1.00
-
-    def process_event(self, event, onlyACDVeto, rf):
-        """Coordinates the sequential execution flow of the cascade pipeline."""
-        
-        status, prob_bkg = self.signal_background_classifier(event, onlyACDVeto, rf)
-        
-        if status == "UN":
-            return "UN", 1.00
-        if status == "BK":
-            return "BK", prob_bkg
-
-        # If it is a good SIGNAL, route it to evaluate the photon type
-        final_type, final_prob = self.type_of_signal(event)
-        return final_type, final_prob
 
 def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False):
 
@@ -200,8 +175,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             print(f"Unable to open file {fn_in}. Skipping!")
             continue
 
-        prob_ZH_l1 = []
-        prob_BK_l1 = []
+        prob_MU_l1 = []
         prob_SIGNAL_l1 = []
         prob_UN_l1 = []
 
@@ -209,7 +183,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         prob_PA_l2 = []
         prob_CO_l2 = []
         prob_UN_l2 = []
-        prob_ZH_l2 = []
 
         energy_true_PH_wrong = []
         energy_true_PA_wrong = []
@@ -239,14 +212,14 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     i += 1
                     id_event = Event.GetID()
+                    
                     t0 = time.perf_counter()
 
-                    status, prob_bkg = pipeline.signal_background_classifier(Event, onlyACDVeto, rf)
+                    status, prob_bkg = pipeline.signal_background_classifier(Event, onlyACDVeto)
                     
-                    if status == "ZH": prob_ZH_l1.append(prob_bkg)
-                    elif status == "BK": prob_BK_l1.append(prob_bkg)
+                    if status == "UN": prob_UN_l1.append(prob_bkg)
+                    elif status == "MU": prob_MU_l1.append(prob_bkg)
                     elif status == "SIGNAL": prob_SIGNAL_l1.append(prob_bkg)
-                    elif status == "UN": prob_UN_l1.append(prob_bkg)
 
                     if status == "SIGNAL":
                         event_type, probability = pipeline.type_of_signal(Event)
@@ -254,22 +227,17 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         elif event_type == "PA": prob_PA_l2.append(probability)
                         elif event_type == "CO": prob_CO_l2.append(probability)
                         elif event_type == "UN": prob_UN_l2.append(probability)
-                        elif event_type == "ZH": prob_ZH_l2.append(probability)
                     else:
                         event_type, probability = status, prob_bkg
-
                     
-                   # event_type, probability = pipeline.process_event(Event, onlyACDVeto, rf)
                     t_classify += time.perf_counter() - t0
 
                     t0 = time.perf_counter()
-
-
-
                     if debug:
                         mc_process = "UNKNOWN"
                         if Event.GetNIAs() > 1:
                             mc_process = str(Event.GetIAAt(1).GetProcess().Data())
+                            # Confusion matrix
                             if status == "SIGNAL":
                                 if mc_process in mc_mapping and event_type in pred_mapping:
                                     true_idx = mc_mapping[mc_process]
@@ -280,35 +248,34 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                                     ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0
                                     zpos = Event.GetIAAt(1).GetPosition().Z()
                                     
-                                # Canale 1: True Photo classificato CO o PA
+                                # Canale 1: True Photo misclassified (CO o PA)
                                 if mc_process == "PHOT" and event_type != "PH":
                                     energy_true_PH_wrong.append(ia_e)
                                     zpos_true_PH_wrong.append(zpos)
                                     
-                                # Canale 2: True Pair classificato PH o CO
+                                # Canale 2: True Pair misclassified (PH o CO)
                                 elif mc_process == "PAIR" and event_type != "PA":
                                     energy_true_PA_wrong.append(ia_e)
                                     zpos_true_PA_wrong.append(zpos)
                                     
-                                # Canale 3: True Compton classificato PA o PH
+                                # Canale 3: True Compton misclassified (PA o PH)
                                 elif mc_process == "COMP" and event_type != "CO":
                                     energy_true_CO_wrong.append(ia_e)
                                     zpos_true_CO_wrong.append(zpos)
                                     
-                            print(
-                                f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
-                                file=f_out,
-                            )
+                        print(
+                            f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
+                            file=f_out,
+                        )
                     else:
                         # Write output like Nathan
                         print(
                             f"SE\nID {id_event}\nET {event_type}\nTP {probability:.4f}",
                             file=f_out,
                         )
-
-                        t_write += time.perf_counter() - t0
-                        del Event
-                        pbar.update(1)
+                    t_write += time.perf_counter() - t0
+                    del Event
+                    pbar.update(1)
                         
                     if i % 500 == 0:
                         pbar.set_postfix({
@@ -328,10 +295,10 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             print("[INFO] Plots...")
           
             
-            categories_l1 = ['ZH', 'BK', 'SIGNAL', 'UN']
-            counts_l1 = [len(prob_ZH_l1), len(prob_BK_l1), len(prob_SIGNAL_l1), len(prob_UN_l1)]
+            categories_l1 = ['MU', 'SIGNAL', 'UN']
+            counts_l1 = [len(prob_MU_l1), len(prob_SIGNAL_l1), len(prob_UN_l1)]
             plt.figure(figsize=(8, 5))
-            bars = plt.bar(categories_l1, counts_l1, color=['orange', 'crimson', 'teal', 'gray'], edgecolor='black', alpha=0.7)
+            bars = plt.bar(categories_l1, counts_l1, color=['orange', 'crimson', 'teal'], edgecolor='black', alpha=0.7)
             plt.title('L1: Signal vs Background Counts', fontsize=12, fontweight='bold')
             plt.ylabel('Events')
             for bar in bars:
@@ -343,8 +310,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         
             plt.figure(figsize=(9, 5))
             bins = 50
-            if prob_ZH_l1: plt.hist(prob_ZH_l1, bins=bins, range=(0, 1), alpha=0.4, label='ZH', color='orange', histtype='stepfilled', edgecolor='darkorange')
-            if prob_BK_l1: plt.hist(prob_BK_l1, bins=bins, range=(0, 1), alpha=0.4, label='BK', color='crimson', histtype='stepfilled', edgecolor='darkred')
+            if prob_MU_l1: plt.hist(prob_MU_l1, bins=bins, range=(0, 1), alpha=0.4, label='MU', color='crimson', histtype='stepfilled', edgecolor='darkred')
             if prob_SIGNAL_l1: plt.hist(prob_SIGNAL_l1, bins=bins, range=(0, 1), alpha=0.4, label='SIGNAL', color='teal', histtype='stepfilled', edgecolor='darkslategray')
             if prob_UN_l1: plt.hist(prob_UN_l1, bins=bins, range=(0, 1), alpha=0.4, label='UN', color='gray', histtype='stepfilled', edgecolor='dimgray')
             plt.title('L1: Probability Distribution (TP)', fontsize=12, fontweight='bold')
@@ -354,10 +320,10 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             plt.close()
 
             
-            categories_l2 = ['CO', 'PA', 'PH', 'UN', 'ZH']
-            counts_l2 = [len(prob_CO_l2), len(prob_PA_l2), len(prob_PH_l2), len(prob_UN_l2), len(prob_ZH_l2)]
+            categories_l2 = ['CO', 'PA', 'PH', 'UN']
+            counts_l2 = [len(prob_CO_l2), len(prob_PA_l2), len(prob_PH_l2), len(prob_UN_l2)]
             plt.figure(figsize=(8, 5))
-            bars = plt.bar(categories_l2, counts_l2, color=['royalblue', 'forestgreen', 'darkorchid', 'gray', 'orange'], edgecolor='black', alpha=0.7)
+            bars = plt.bar(categories_l2, counts_l2, color=['royalblue', 'forestgreen', 'darkorchid', 'gray'], edgecolor='black', alpha=0.7)
             plt.title('L2: Photon Type Classification Counts', fontsize=12, fontweight='bold')
             plt.ylabel('Events')
             for bar in bars:
@@ -372,7 +338,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             if prob_PA_l2: plt.hist(prob_PA_l2, bins=bins, range=(0, 1), alpha=0.4, label='PA (Pair)', color='forestgreen', histtype='stepfilled', edgecolor='darkgreen')
             if prob_PH_l2: plt.hist(prob_PH_l2, bins=bins, range=(0, 1), alpha=0.4, label='PH (Photo)', color='darkorchid', histtype='stepfilled', edgecolor='purple')
             if prob_UN_l2: plt.hist(prob_UN_l2, bins=bins, range=(0, 1), alpha=0.4, label='UN', color='gray', histtype='stepfilled', edgecolor='dimgray')
-            if prob_ZH_l2: plt.hist(prob_ZH_l2, bins=bins, range=(0, 1), alpha=0.4, label='ZH', color='orange', histtype='stepfilled', edgecolor='darkorange')
             plt.title('L2: Probability Distribution (TP)', fontsize=12, fontweight='bold')
             plt.yscale('log')
             plt.legend()
@@ -411,6 +376,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 plt.savefig(matrix_path, dpi=300)
                 plt.close()
                 print(f"[OK] Confusion Matrix : {matrix_path}")
+
             if debug:
                 # --- NUOVO PLOT 4 SPETTRO ENERGETICO DEGLI ERRORI PER CATEGORIA ---
                 plt.figure(figsize=(10, 6))
@@ -539,7 +505,7 @@ if __name__ == "__main__":
         geometry_name=args.geometry, 
         model_traced=args.model, 
         onlyACDVeto=args.only_acd_veto, 
-        rf=args.random_forest,
+        rf=None if args.pca is not None else args.random_forest,
         lookup_path=args.pca,
         debug=args.debug
     )

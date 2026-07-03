@@ -1,6 +1,7 @@
 /etp_counts
 /output_etp
 /output_etp_histo
+/sources
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

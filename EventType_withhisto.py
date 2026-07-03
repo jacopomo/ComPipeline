@@ -674,7 +674,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                 # Safeguard in case ALL dictionaries were empty
                 if all_values:
-                    bins_min = int(min(all_values))
+                    bins_min = 0
                     bins_max = int(max(all_values))
                     nhits_bins = np.linspace(bins_min, bins_max, 51)
                 else:

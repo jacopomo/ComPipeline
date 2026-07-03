@@ -645,7 +645,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     bins=edep_bins,
                     log_y=False,
                     categories=["TRA", "CAL", "TOT"],
-                )
+                ) 
                 print(f"[OK] Grafico delle energie depositate degli errori salvato in: {edep_plot_path}")
 
                 # Deposited energy 4-panel subplot

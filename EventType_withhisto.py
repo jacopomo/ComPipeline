@@ -293,13 +293,13 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         zpos_PA_true, zpos_PA_miss = [], []
         zpos_CO_true, zpos_CO_miss = [], []
 
-        E_deposited_tra_true, E_deposited_tra_miss = [], []
-        E_deposited_cal_true, E_deposited_cal_miss = [], []
-        E_deposited_tot_true, E_deposited_tot_miss = [], []
+        E_deposited_tra_true, E_deposited_tra_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
+        E_deposited_cal_true, E_deposited_cal_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
+        E_deposited_tot_true, E_deposited_tot_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
 
-        nhits_tra_true, nhits_tra_miss = [], []
-        nhits_cal_true, nhits_cal_miss = [], []
-        nhits_tot_true, nhits_tot_miss = [], []
+        nhits_tra_true, nhits_tra_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
+        nhits_cal_true, nhits_cal_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
+        nhits_tot_true, nhits_tot_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
 
 
         confusion_matrix = np.zeros((3, 3), dtype=int)
@@ -360,69 +360,69 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                                     hit_data_tra, n_hits_tra = pipeline.extract_hit_data(Event, detId=1)
                                     hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
-                                    edep_tra = hit_data_tra[0, 3, :].sum().item() if hit_data_tra is not None else 0.0
-                                    edep_cal = hit_data_cal[0, 3, :].sum().item() if hit_data_cal is not None else 0.0
+                                    edep_tra = hit_data_tra[0, 3, :].sum().item()/1000 if hit_data_tra is not None else np.nan
+                                    edep_cal = hit_data_cal[0, 3, :].sum().item()/1000 if hit_data_cal is not None else np.nan
                                 # Canale 1: True Photo
                                 if mc_process == "PHOT":
                                     if event_type == "PH":
                                         incident_energy_PH_true.append(ia_e)
                                         zpos_PH_true.append(zpos)
-                                        E_deposited_tra_true.append(edep_tra)
-                                        E_deposited_cal_true.append(edep_cal)
-                                        E_deposited_tot_true.append(edep_tra+edep_cal)
-                                        nhits_tra_true.append(n_hits_tra)
-                                        nhits_cal_true.append(n_hits_cal)
-                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_true["PH"].append(edep_tra)
+                                        E_deposited_cal_true["PH"].append(edep_cal)
+                                        E_deposited_tot_true["PH"].append(edep_tra+edep_cal)
+                                        nhits_tra_true["PH"].append(n_hits_tra)
+                                        nhits_cal_true["PH"].append(n_hits_cal)
+                                        nhits_tot_true["PH"].append(n_hits_tra+n_hits_cal)
                                     else:
                                         incident_energy_PH_miss.append(ia_e)
                                         zpos_PH_miss.append(zpos)
-                                        E_deposited_tra_miss.append(edep_tra)
-                                        E_deposited_cal_miss.append(edep_cal)
-                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
-                                        nhits_tra_miss.append(n_hits_tra)
-                                        nhits_cal_miss.append(n_hits_cal)
-                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_miss["PH"].append(edep_tra)
+                                        E_deposited_cal_miss["PH"].append(edep_cal)
+                                        E_deposited_tot_miss["PH"].append(edep_tra+edep_cal)
+                                        nhits_tra_miss["PH"].append(n_hits_tra)
+                                        nhits_cal_miss["PH"].append(n_hits_cal)
+                                        nhits_tot_miss["PH"].append(n_hits_tra+n_hits_cal)
                                 # Canale 2: True PAIR
                                 if mc_process == "PAIR":
                                     if event_type == "PA":
                                         incident_energy_PA_true.append(ia_e)
                                         zpos_PA_true.append(zpos)
-                                        E_deposited_tra_true.append(edep_tra)
-                                        E_deposited_cal_true.append(edep_cal)
-                                        E_deposited_tot_true.append(edep_tra+edep_cal)
-                                        nhits_tra_true.append(n_hits_tra)
-                                        nhits_cal_true.append(n_hits_cal)
-                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_true["PA"].append(edep_tra)
+                                        E_deposited_cal_true["PA"].append(edep_cal)
+                                        E_deposited_tot_true["PA"].append(edep_tra+edep_cal)
+                                        nhits_tra_true["PA"].append(n_hits_tra)
+                                        nhits_cal_true["PA"].append(n_hits_cal)
+                                        nhits_tot_true["PA"].append(n_hits_tra+n_hits_cal)
                                     else:
                                         incident_energy_PA_miss.append(ia_e)
                                         zpos_PA_miss.append(zpos)
-                                        E_deposited_tra_miss.append(edep_tra)
-                                        E_deposited_cal_miss.append(edep_cal)
-                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
-                                        nhits_tra_miss.append(n_hits_tra)
-                                        nhits_cal_miss.append(n_hits_cal)
-                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_miss["PA"].append(edep_tra)
+                                        E_deposited_cal_miss["PA"].append(edep_cal)
+                                        E_deposited_tot_miss["PA"].append(edep_tra+edep_cal)
+                                        nhits_tra_miss["PA"].append(n_hits_tra)
+                                        nhits_cal_miss["PA"].append(n_hits_cal)
+                                        nhits_tot_miss["PA"].append(n_hits_tra+n_hits_cal)
 
                                 # Canale 3: True COMP
                                 if mc_process == "COMP":
                                     if event_type == "CO":
                                         incident_energy_CO_true.append(ia_e)
                                         zpos_CO_true.append(zpos)
-                                        E_deposited_tra_true.append(edep_tra)
-                                        E_deposited_cal_true.append(edep_cal)
-                                        E_deposited_tot_true.append(edep_tra+edep_cal)
-                                        nhits_tra_true.append(n_hits_tra)
-                                        nhits_cal_true.append(n_hits_cal)
-                                        nhits_tot_true.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_true["CO"].append(edep_tra)
+                                        E_deposited_cal_true["CO"].append(edep_cal)
+                                        E_deposited_tot_true["CO"].append(edep_tra+edep_cal)
+                                        nhits_tra_true["CO"].append(n_hits_tra)
+                                        nhits_cal_true["CO"].append(n_hits_cal)
+                                        nhits_tot_true["CO"].append(n_hits_tra+n_hits_cal)
                                     else:
                                         incident_energy_CO_miss.append(ia_e)
                                         zpos_CO_miss.append(zpos)
-                                        E_deposited_tra_miss.append(edep_tra)
-                                        E_deposited_cal_miss.append(edep_cal)
-                                        E_deposited_tot_miss.append(edep_tra+edep_cal)
-                                        nhits_tra_miss.append(n_hits_tra)
-                                        nhits_cal_miss.append(n_hits_cal)
-                                        nhits_tot_miss.append(n_hits_tra+n_hits_cal)
+                                        E_deposited_tra_miss["CO"].append(edep_tra)
+                                        E_deposited_cal_miss["CO"].append(edep_cal)
+                                        E_deposited_tot_miss["CO"].append(edep_tra+edep_cal)
+                                        nhits_tra_miss["CO"].append(n_hits_tra)
+                                        nhits_cal_miss["CO"].append(n_hits_cal)
+                                        nhits_tot_miss["CO"].append(n_hits_tra+n_hits_cal)
                                     
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
@@ -648,7 +648,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 ) 
                 print(f"[OK] Grafico delle energie depositate degli errori salvato in: {edep_plot_path}")
 
-                # Deposited energy 4-panel subplot
+                # Nhits 4-panel subplot
                 nhits_true_by_category = {
                     "TRA": nhits_tra_true,
                     "CAL": nhits_cal_true,
@@ -674,9 +674,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                 # Safeguard in case ALL dictionaries were empty
                 if all_values:
-                    bins_min = 0
                     bins_max = int(max(all_values))
-                    nhits_bins = np.linspace(bins_min, bins_max, 51)
+                    nhits_bins = np.arange(0, bins_max+1, 1)
                 else:
                     print("Warning: No hit counts found!")
                     nhits_bins = 50  # Default fallback
@@ -694,6 +693,53 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     categories=["TRA", "CAL", "TOT"],
                 )
                 print(f"[OK] Grafico delle nhits degli errori salvato in: {nhits_plot_path}")
+
+                # Tra/Cal ratio deposited energy 4-panel subplot
+                erat_true_by_category = {
+                    "CO": zpos_CO_true,
+                    "PA": zpos_PA_true,
+                    "PH": zpos_PH_true,
+                }
+                nhits_miss_by_category = {
+                    "CO": nhits_tra_miss,
+                    "PA": nhits_cal_miss,
+                    "PH": nhits_tot_miss,
+                }
+                nhits_tot_by_category = {
+                    "CO": nhits_tra_true + nhits_tra_miss,
+                    "PA": nhits_cal_true + nhits_cal_miss,
+                    "PH": nhits_tot_true + nhits_tot_miss,
+                }
+                
+                # Extract all the integer values from the dictionaries and flatten
+                all_values = []
+                for d in [nhits_true_by_category, nhits_miss_by_category, nhits_tot_by_category]:
+                    for values_list in d.values():
+                        if values_list:
+                            all_values.extend(values_list)
+
+                # Safeguard in case ALL dictionaries were empty
+                if all_values:
+                    bins_max = int(max(all_values))
+                    nhits_bins = np.arange(0, bins_max+1, 1)
+                else:
+                    print("Warning: No hit counts found!")
+                    nhits_bins = 50  # Default fallback
+
+                nhits_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png"
+                plot_type_classification_comparison(
+                    true_by_category=nhits_true_by_category,
+                    miss_by_category=nhits_miss_by_category,
+                    all_by_category=nhits_tot_by_category,
+                    output_path=nhits_plot_path,
+                    xlabel="Number of hits",
+                    title="Distribution of Number of Hits by Detector (Layer 2)",
+                    bins=nhits_bins,
+                    log_y=False,
+                    categories=["TRA", "CAL", "TOT"],
+                )
+                print(f"[OK] Grafico delle nhits degli errori salvato in: {nhits_plot_path}")
+
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(

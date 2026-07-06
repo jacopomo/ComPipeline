@@ -276,36 +276,26 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             print(f"Unable to open file {fn_in}. Skipping!")
             continue
 
-        prob_MU_l1 = []
-        prob_SIGNAL_l1 = []
-        prob_UN_l1 = []
-
-        prob_PH_l2 = []
-        prob_PA_l2 = []
-        prob_CO_l2 = []
-        prob_UN_l2 = []
-
-        incident_energy_PH_true, incident_energy_PH_miss = [], []
-        incident_energy_PA_true, incident_energy_PA_miss = [], []
-        incident_energy_CO_true, incident_energy_CO_miss = [], []
-
-        zpos_PH_true, zpos_PH_miss = [], []
-        zpos_PA_true, zpos_PA_miss = [], []
-        zpos_CO_true, zpos_CO_miss = [], []
-
-        E_deposited_tra_true, E_deposited_tra_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-        E_deposited_cal_true, E_deposited_cal_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-        E_deposited_tot_true, E_deposited_tot_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-
-        nhits_tra_true, nhits_tra_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-        nhits_cal_true, nhits_cal_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-        nhits_tot_true, nhits_tot_miss = {"CO": [], "PA": [], "PH": []}, {"CO": [], "PA": [], "PH": []}
-
+        # Level 1 and 2 probabilities
+        prob_l1 = {"UN": [], "MU": [], "SIGNAL": []}
+        prob_l2 = {"PH": [], "PA": [], "CO": [], "UN": []}
+        
+        # Master metrics dictionary combining true/miss, interaction types, and all features
+        # Structure: metrics[outcome][process_key][feature]
+        processes = ["PH", "PA", "CO"]
+        outcomes = ["true", "miss"]
+        features = ["incident_energy", "zpos", "E_tra", "E_cal", "E_tot", "nhits_tra", "nhits_cal", "nhits_tot"]
+        
+        metrics = {
+            outcome: {proc: {feat: [] for feat in features} for proc in processes}
+            for outcome in outcomes
+        }
 
         confusion_matrix = np.zeros((3, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2}
         pred_mapping = {"CO": 0, "PA": 1, "PH": 2}
-        
+        process_map = {"PHOT": "PH", "PAIR": "PA", "COMP": "CO"}
+
         with open(fn_out, "w") as f_out:
 
             t_read = t_classify = t_write = 0.0
@@ -327,16 +317,13 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                     status, prob_bkg = pipeline.signal_background_classifier(Event, onlyACDVeto)
                     
-                    if status == "UN": prob_UN_l1.append(prob_bkg)
-                    elif status == "MU": prob_MU_l1.append(prob_bkg)
-                    elif status == "SIGNAL": prob_SIGNAL_l1.append(prob_bkg)
+                    if status in prob_l1:
+                        prob_l1[status].append(prob_bkg)
 
                     if status == "SIGNAL":
                         event_type, probability = pipeline.type_of_signal(Event)
-                        if event_type == "PH": prob_PH_l2.append(probability)
-                        elif event_type == "PA": prob_PA_l2.append(probability)
-                        elif event_type == "CO": prob_CO_l2.append(probability)
-                        elif event_type == "UN": prob_UN_l2.append(probability)
+                        if event_type in prob_l2:
+                            prob_l2[event_type].append(probability)
                     else:
                         event_type, probability = status, prob_bkg
                     
@@ -347,82 +334,38 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         mc_process = "UNKNOWN"
                         if Event.GetNIAs() > 1:
                             mc_process = str(Event.GetIAAt(1).GetProcess().Data())
-                            # Confusion matrix
-                            if status == "SIGNAL":
-                                if mc_process in mc_mapping and event_type in pred_mapping:
-                                    true_idx = mc_mapping[mc_process]
-                                    pred_idx = pred_mapping[event_type]
-                                    confusion_matrix[true_idx, pred_idx] += 1
+                            # Update confusion matrix
+                            if status == "SIGNAL" and mc_process in mc_mapping and event_type in pred_mapping:
+                                true_idx = mc_mapping[mc_process]
+                                pred_idx = pred_mapping[event_type]
+                                confusion_matrix[true_idx, pred_idx] += 1
 
-                                if Event.GetNIAs() > 0:
-                                    ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0
-                                    zpos = Event.GetIAAt(1).GetPosition().Z()
+                            # Extract Data & Populate Unified Metrics Dict
+                            if Event.GetNIAs() > 0 and mc_process in process_map:
+                                ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0 # keV to MeV
+                                zpos = Event.GetIAAt(1).GetPosition().Z()
 
-                                    hit_data_tra, n_hits_tra = pipeline.extract_hit_data(Event, detId=1)
-                                    hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
-                                    edep_tra = hit_data_tra[0, 3, :].sum().item()/1000 if hit_data_tra is not None else np.nan
-                                    edep_cal = hit_data_cal[0, 3, :].sum().item()/1000 if hit_data_cal is not None else np.nan
-                                # Canale 1: True Photo
-                                if mc_process == "PHOT":
-                                    if event_type == "PH":
-                                        incident_energy_PH_true.append(ia_e)
-                                        zpos_PH_true.append(zpos)
-                                        E_deposited_tra_true["PH"].append(edep_tra)
-                                        E_deposited_cal_true["PH"].append(edep_cal)
-                                        E_deposited_tot_true["PH"].append(edep_tra+edep_cal)
-                                        nhits_tra_true["PH"].append(n_hits_tra)
-                                        nhits_cal_true["PH"].append(n_hits_cal)
-                                        nhits_tot_true["PH"].append(n_hits_tra+n_hits_cal)
-                                    else:
-                                        incident_energy_PH_miss.append(ia_e)
-                                        zpos_PH_miss.append(zpos)
-                                        E_deposited_tra_miss["PH"].append(edep_tra)
-                                        E_deposited_cal_miss["PH"].append(edep_cal)
-                                        E_deposited_tot_miss["PH"].append(edep_tra+edep_cal)
-                                        nhits_tra_miss["PH"].append(n_hits_tra)
-                                        nhits_cal_miss["PH"].append(n_hits_cal)
-                                        nhits_tot_miss["PH"].append(n_hits_tra+n_hits_cal)
-                                # Canale 2: True PAIR
-                                if mc_process == "PAIR":
-                                    if event_type == "PA":
-                                        incident_energy_PA_true.append(ia_e)
-                                        zpos_PA_true.append(zpos)
-                                        E_deposited_tra_true["PA"].append(edep_tra)
-                                        E_deposited_cal_true["PA"].append(edep_cal)
-                                        E_deposited_tot_true["PA"].append(edep_tra+edep_cal)
-                                        nhits_tra_true["PA"].append(n_hits_tra)
-                                        nhits_cal_true["PA"].append(n_hits_cal)
-                                        nhits_tot_true["PA"].append(n_hits_tra+n_hits_cal)
-                                    else:
-                                        incident_energy_PA_miss.append(ia_e)
-                                        zpos_PA_miss.append(zpos)
-                                        E_deposited_tra_miss["PA"].append(edep_tra)
-                                        E_deposited_cal_miss["PA"].append(edep_cal)
-                                        E_deposited_tot_miss["PA"].append(edep_tra+edep_cal)
-                                        nhits_tra_miss["PA"].append(n_hits_tra)
-                                        nhits_cal_miss["PA"].append(n_hits_cal)
-                                        nhits_tot_miss["PA"].append(n_hits_tra+n_hits_cal)
-
-                                # Canale 3: True COMP
-                                if mc_process == "COMP":
-                                    if event_type == "CO":
-                                        incident_energy_CO_true.append(ia_e)
-                                        zpos_CO_true.append(zpos)
-                                        E_deposited_tra_true["CO"].append(edep_tra)
-                                        E_deposited_cal_true["CO"].append(edep_cal)
-                                        E_deposited_tot_true["CO"].append(edep_tra+edep_cal)
-                                        nhits_tra_true["CO"].append(n_hits_tra)
-                                        nhits_cal_true["CO"].append(n_hits_cal)
-                                        nhits_tot_true["CO"].append(n_hits_tra+n_hits_cal)
-                                    else:
-                                        incident_energy_CO_miss.append(ia_e)
-                                        zpos_CO_miss.append(zpos)
-                                        E_deposited_tra_miss["CO"].append(edep_tra)
-                                        E_deposited_cal_miss["CO"].append(edep_cal)
-                                        E_deposited_tot_miss["CO"].append(edep_tra+edep_cal)
-                                        nhits_tra_miss["CO"].append(n_hits_tra)
-                                        nhits_cal_miss["CO"].append(n_hits_cal)
-                                        nhits_tot_miss["CO"].append(n_hits_tra+n_hits_cal)
+                                hit_data_tra, n_hits_tra = pipeline.extract_hit_data(Event, detId=1)
+                                hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
+                                edep_tra = hit_data_tra[0, 3, :].sum().item()/1000 if hit_data_tra is not None else np.nan # keV to MeV
+                                edep_cal = hit_data_cal[0, 3, :].sum().item()/1000 if hit_data_cal is not None else np.nan # keV to MeV
+                                
+                                # Determine the dictionary keys
+                                proc_key = process_map[mc_process]
+                                outcome_key = 'true' if event_type == proc_key else "miss"
+                                
+                                # Target specific leaf inside metrics[outcome][process]
+                                tgt = metrics[outcome_key][proc_key]
+                                
+                                # Append features cleanly
+                                tgt["incident_energy"].append(ia_e)
+                                tgt["zpos"].append(zpos)
+                                tgt["E_tra"].append(edep_tra)
+                                tgt["E_cal"].append(edep_cal)
+                                tgt["E_tot"].append(edep_tra + edep_cal)
+                                tgt["nhits_tra"].append(n_hits_tra)
+                                tgt["nhits_cal"].append(n_hits_cal)
+                                tgt["nhits_tot"].append(n_hits_tra + n_hits_cal)
                                     
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
@@ -457,23 +400,32 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
           
             
             categories_l1 = ['MU', 'SIGNAL', 'UN']
-            counts_l1 = [len(prob_MU_l1), len(prob_SIGNAL_l1), len(prob_UN_l1)]
+            counts_l1 = [len(prob_l1[cat]) for cat in categories_l1]
             plt.figure(figsize=(8, 5))
             bars = plt.bar(categories_l1, counts_l1, color=['orange', 'crimson', 'teal'], edgecolor='black', alpha=0.7)
             plt.title('L1: Signal vs Background Counts', fontsize=12, fontweight='bold')
             plt.ylabel('Events')
+            
+            max_c1 = max(counts_l1) if counts_l1 and max(counts_l1) > 0 else 1
             for bar in bars:
                 yval = bar.get_height()
-                plt.text(bar.get_x() + bar.get_width()/2, yval + (max(counts_l1)*0.01), f'{yval}', ha='center', va='bottom')
+                plt.text(bar.get_x() + bar.get_width()/2, yval + (max_c1*0.01), f'{yval}', ha='center', va='bottom')
             plt.savefig(clean_out_dir / f"{base_name}_L1_counts.png", dpi=300)
             plt.close()
 
         
             plt.figure(figsize=(9, 5))
             bins = 50
-            if prob_MU_l1: plt.hist(prob_MU_l1, bins=bins, range=(0, 1), alpha=0.4, label='MU', color='crimson', histtype='stepfilled', edgecolor='darkred')
-            if prob_SIGNAL_l1: plt.hist(prob_SIGNAL_l1, bins=bins, range=(0, 1), alpha=0.4, label='SIGNAL', color='teal', histtype='stepfilled', edgecolor='darkslategray')
-            if prob_UN_l1: plt.hist(prob_UN_l1, bins=bins, range=(0, 1), alpha=0.4, label='UN', color='gray', histtype='stepfilled', edgecolor='dimgray')
+            l1_hist_configs = [
+                ('MU', 'crimson', 'darkred'),
+                ('SIGNAL', 'teal', 'darkslategray'),
+                ('UN', 'gray', 'dimgray')
+            ]
+            for cat, f_col, e_col in l1_hist_configs:
+                if prob_l1[cat]: 
+                    plt.hist(prob_l1[cat], bins=bins, range=(0, 1), alpha=0.4, label=cat, color=f_col, histtype='stepfilled', edgecolor=e_col)
+
+            
             plt.title('L1: Probability Distribution (TP)', fontsize=12, fontweight='bold')
             plt.yscale('log')
             plt.legend()
@@ -482,23 +434,33 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
             
             categories_l2 = ['CO', 'PA', 'PH', 'UN']
-            counts_l2 = [len(prob_CO_l2), len(prob_PA_l2), len(prob_PH_l2), len(prob_UN_l2)]
+            counts_l2 = [len(prob_l2[cat]) for cat in categories_l2]
+
             plt.figure(figsize=(8, 5))
             bars = plt.bar(categories_l2, counts_l2, color=['royalblue', 'forestgreen', 'darkorchid', 'gray'], edgecolor='black', alpha=0.7)
             plt.title('L2: Photon Type Classification Counts', fontsize=12, fontweight='bold')
             plt.ylabel('Events')
+
+            max_c2 = max(counts_l2) if counts_l2 and max(counts_l2) > 0 else 1
             for bar in bars:
                 yval = bar.get_height()
-                plt.text(bar.get_x() + bar.get_width()/2, yval + (max(counts_l2)*0.01), f'{yval}', ha='center', va='bottom')
+                plt.text(bar.get_x() + bar.get_width()/2, yval + (max_c2*0.01), f'{yval}', ha='center', va='bottom')
             plt.savefig(clean_out_dir / f"{base_name}_L2_counts.png", dpi=300)
             plt.close()
 
             # --- PLOT LAYER 2: PROBABILITÀ ---
             plt.figure(figsize=(9, 5))
-            if prob_CO_l2: plt.hist(prob_CO_l2, bins=bins, range=(0, 1), alpha=0.4, label='CO (Compton)', color='royalblue', histtype='stepfilled', edgecolor='darkblue')
-            if prob_PA_l2: plt.hist(prob_PA_l2, bins=bins, range=(0, 1), alpha=0.4, label='PA (Pair)', color='forestgreen', histtype='stepfilled', edgecolor='darkgreen')
-            if prob_PH_l2: plt.hist(prob_PH_l2, bins=bins, range=(0, 1), alpha=0.4, label='PH (Photo)', color='darkorchid', histtype='stepfilled', edgecolor='purple')
-            if prob_UN_l2: plt.hist(prob_UN_l2, bins=bins, range=(0, 1), alpha=0.4, label='UN', color='gray', histtype='stepfilled', edgecolor='dimgray')
+            l2_hist_configs = [
+                ('CO', 'CO (Compton)', 'royalblue', 'darkblue'),
+                ('PA', 'PA (Pair)', 'forestgreen', 'darkgreen'),
+                ('PH', 'PH (Photo)', 'darkorchid', 'purple'),
+                ('UN', 'UN', 'gray', 'dimgray')
+            ]
+            for cat, label, f_col, e_col in l2_hist_configs:
+                if prob_l2[cat]:
+                    plt.hist(prob_l2[cat], bins=bins, range=(0, 1), alpha=0.4, label=label, color=f_col, histtype='stepfilled', edgecolor=e_col)
+
+                    
             plt.title('L2: Probability Distribution (TP)', fontsize=12, fontweight='bold')
             plt.yscale('log')
             plt.legend()
@@ -519,8 +481,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 
                 plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
                 
-                # Inserisci i valori numerici dentro i quadrati della matrice
-                thresh = confusion_matrix.max() / 2.
+                # Render values onto the matrix squares
+                thresh = confusion_matrix.max() / 2. if confusion_matrix.max() > 0 else 1
                 for row in range(3):
                     for col in range(3):
                         ax.text(col, row, format(confusion_matrix[row, col], 'd'),
@@ -536,209 +498,185 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 matrix_path = clean_out_dir / f"{base_name}_confusion_matrix.png"
                 plt.savefig(matrix_path, dpi=300)
                 plt.close()
-                print(f"[OK] Confusion Matrix : {matrix_path}")
-
+                print(f"[OK] Confusion Matrix : {matrix_path}")    
+        
             if debug:
-                # Incident energy 4-panel subplot
-                energy_true_by_category = {
-                    "CO": incident_energy_CO_true,
-                    "PA": incident_energy_PA_true,
-                    "PH": incident_energy_PH_true,
-                }
-                energy_miss_by_category = {
-                    "CO": incident_energy_CO_miss,
-                    "PA": incident_energy_PA_miss,
-                    "PH": incident_energy_PH_miss,
-                }
-                energy_all_by_category = {
-                    "CO": incident_energy_CO_true + incident_energy_CO_miss,
-                    "PA": incident_energy_PA_true + incident_energy_PA_miss,
-                    "PH": incident_energy_PH_true + incident_energy_PH_miss,
-                }
-
-                energy_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_energy.png"
-                energy_bins = np.arange(0, 51, 1) # 50 1 MeV bins
-                plot_type_classification_comparison(
-                    true_by_category=energy_true_by_category,
-                    miss_by_category=energy_miss_by_category,
-                    all_by_category=energy_all_by_category,
-                    output_path=energy_plot_path,
-                    xlabel="Incident Energy (MeV)",
-                    title="Incident Energy Distribution by Category (Layer 2)",
-                    bins=energy_bins,
-                    log_y=True,
-                )
-                print(f"[OK] Spettro degli errori per categoria salvato in: {energy_plot_path}")
+                processes = ["CO", "PA", "PH"]
                 
-                # Incident zpos 4-panel subplot
-                zpos_true_by_category = {
-                    "CO": zpos_CO_true,
-                    "PA": zpos_PA_true,
-                    "PH": zpos_PH_true,
-                }
-                zpos_miss_by_category = {
-                    "CO": zpos_CO_miss,
-                    "PA": zpos_PA_miss,
-                    "PH": zpos_PH_miss,
-                }
-                zpos_all_by_category = {
-                    "CO": zpos_CO_true + zpos_CO_miss,
-                    "PA": zpos_PA_true + zpos_PA_miss,
-                    "PH": zpos_PH_true + zpos_PH_miss,
-                }
+                # Helper function to generate dynamic bins across all plot types safely
+                def get_dynamic_bins(data_list, bin_rule, fallback=50):
+                    if not isinstance(bin_rule, str):
+                            return bin_rule
+                    if not data_list:
+                        return fallback
+                    
+                    if bin_rule == "linspace":
+                        return np.linspace(min(data_list), max(data_list), 51)
+                    if bin_rule == "arange":
+                        return np.arange(0, int(max(data_list)) + 1, 1)
+                    return fallback # Default fallback if an explicit bin array was provided
                 
-                z_bins = np.linspace(-15, 30, 51) # 50 equally spaced bins defined for consistency
-                zpos_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_zpos.png"
-                plot_type_classification_comparison(
-                    true_by_category=zpos_true_by_category,
-                    miss_by_category=zpos_miss_by_category,
-                    all_by_category=zpos_all_by_category,
-                    output_path=zpos_plot_path,
-                    xlabel="Incidence Z Position (cm)",
-                    title="Z Vertex Distribution by Category (Layer 2)",
-                    bins=z_bins,
-                    log_y=False,
-                )
-                print(f"[OK] Grafico delle posizioni Z degli errori salvato in: {zpos_plot_path}")
-                
-                # Deposited energy 4-panel subplot
-                edep_true_by_category = {
-                    "TRA": E_deposited_tra_true,
-                    "CAL": E_deposited_cal_true,
-                    "TOT": E_deposited_tot_true,
-                }
-                edep_miss_by_category = {
-                    "TRA": E_deposited_tra_miss,
-                    "CAL": E_deposited_cal_miss,
-                    "TOT": E_deposited_tot_miss,
-                }
-                edep_tot_by_category = {
-                    "TRA": E_deposited_tra_true + E_deposited_tra_miss,
-                    "CAL": E_deposited_cal_true + E_deposited_cal_miss,
-                    "TOT": E_deposited_tot_true + E_deposited_tot_miss,
-                }
+                # =================================================================
+                # TYPE 1: Metrics split by Particle Type (CO, PA, PH)
+                # =================================================================
+                particle_plots = [
+                    {
+                        "feat": "incident_energy",
+                        "xlabel": "Incident Energy (MeV)",
+                        "title": "Incident Energy Distribution by Category (Layer 2)",
+                        "bin_rule": np.arange(0, 51, 1),
+                        "log_y": True,
+                        "suffix": "energy",
+                        "calc": None
+                    },
+                    {
+                        "feat": "zpos",
+                        "xlabel": "Incidence Z Position (cm)",
+                        "title": "Z Vertex Distribution by Category (Layer 2)",
+                        "bin_rule": np.linspace(-15, 30, 51),
+                        "log_y": False,
+                        "suffix": "zpos",
+                        "calc": None
+                    }, 
+                    {
+                        "feat": "erat", 
+                        "xlabel": "Energy Ratio (E_tra / E_cal)",
+                        "title": "Deposited Energy Ratio (TRA / CAL) by Category (Layer 2)",
+                        "bin_rule": "linspace", # Now dynamic based on data limits!
+                        "log_y": False,
+                        "suffix": "erat",
+                        "calc": lambda b: np.divide(np.array(b["E_tra"]), np.array(b["E_cal"]), 
+                                                    out=np.full_like(np.array(b["E_tra"]), np.nan, dtype=float), 
+                                                    where=np.array(b["E_cal"]) > 0)
+                    }, # Added missing comma here
+                    {
+                        "feat": "nrat", 
+                        "xlabel": "Number of Hits Ratio (n_tra / n_cal)",
+                        "title": "Number of Hits Ratio (TRA / CAL) by Category (Layer 2)",
+                        "bin_rule": "linspace", # Ratios are continuous floats, so linspace fits best
+                        "log_y": False,
+                        "suffix": "nrat",
+                        "calc": lambda b: np.divide(np.array(b["nhits_tra"]), np.array(b["nhits_cal"]), 
+                                                    out=np.full_like(np.array(b["nhits_tra"]), np.nan, dtype=float), 
+                                                    where=np.array(b["nhits_cal"]) > 0)
+                    }
+                ]
 
-                # Extract all the integer values from the dictionaries and flatten
-                all_values = []
-                for d in [edep_true_by_category, edep_miss_by_category, edep_tot_by_category]:
-                    for values_list in d.values():
-                        if values_list:
-                            all_values.extend(values_list)
+                for p in particle_plots:
+                    feat = p["feat"]
+                    true_dict, miss_dict = {}, {}
+                    
+                    for proc in processes:
+                        if p.get("calc") is not None:
+                            raw_true = p["calc"](metrics["true"][proc])
+                            raw_miss = p["calc"](metrics["miss"][proc])
+                            true_dict[proc] = raw_true[~np.isnan(raw_true)].tolist()
+                            miss_dict[proc] = raw_miss[~np.isnan(raw_miss)].tolist()
+                        else:
+                            true_dict[proc] = metrics["true"][proc][feat]
+                            miss_dict[proc] = metrics["miss"][proc][feat]
+                   
+                    all_dict = {proc: true_dict[proc] + miss_dict[proc] for proc in processes}
+                    
+                    # Unify dynamic flattening across all channels for evaluation
+                    flat_data = sum(true_dict.values(), []) + sum(miss_dict.values(), [])
+                    bins = get_dynamic_bins(flat_data, p["bin_rule"])
+                   
+                    plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_{p['suffix']}.png"
+                    plot_type_classification_comparison(
+                        true_by_category=true_dict, miss_by_category=miss_dict, all_by_category=all_dict,
+                        output_path=plot_path, xlabel=p["xlabel"], title=p["title"], bins=bins, log_y=p["log_y"]
+                    )
+                    print(f"[OK] {p['title']} salvato in: {plot_path}")
+                # =================================================================
+                # TYPE 2: Metrics split by Detector Component (TRA, CAL, TOT)
+                # =================================================================
+                detector_plots = [
+                    {
+                        "feats": {"TRA": "E_tra", "CAL": "E_cal", "TOT": "E_tot"},
+                        "xlabel": "Deposited energy (MeV)",
+                        "title": "Deposited Energy Distribution by Detector (Layer 2)",
+                        "suffix": "edep",
+                        "bin_rule": "linspace"
+                    },
+                    {
+                        "feats": {"TRA": "nhits_tra", "CAL": "nhits_cal", "TOT": "nhits_tot"},
+                        "xlabel": "Number of hits",
+                        "title": "Distribution of Number of Hits by Detector (Layer 2)",
+                        "suffix": "nhits",
+                        "bin_rule": "arange" # Hits are whole integers, so arange fits perfectly
+                    }
+                ]
 
-                # Safeguard in case ALL dictionaries were empty
-                if all_values:
-                    bins_min = min(all_values)
-                    bins_max = max(all_values)
-                    edep_bins = np.linspace(bins_min, bins_max, 51)
-                else:
-                    print("Warning: No deposited energy found!")
-                    edep_bins = 50  # Default fallback
+                for d in detector_plots:
+                    true_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
+                    miss_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
+                    
+                    for det, feat_key in d["feats"].items():
+                        for proc in processes:
+                            true_dict[det].extend(metrics["true"][proc][feat_key])
+                            miss_dict[det].extend(metrics["miss"][proc][feat_key])
+                            
+                    all_dict = {det: true_dict[det] + miss_dict[det] for det in ["TRA", "CAL", "TOT"]}
+                    
+                    # Compute flat dataset to automatically extract boundaries
+                    flat_data = true_dict["TRA"] + true_dict["CAL"] + true_dict["TOT"] + miss_dict["TRA"] + miss_dict["CAL"] + miss_dict["TOT"]
+                    bins = get_dynamic_bins(flat_data, d["bin_rule"])
+                        
+                    plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_{d['suffix']}.png"
+                    plot_type_classification_comparison(
+                        true_by_category=true_dict, miss_by_category=miss_dict, all_by_category=all_dict,
+                        output_path=plot_path, xlabel=d["xlabel"], title=d["title"], bins=bins, log_y=False,
+                        categories=["TRA", "CAL", "TOT"]
+                    )
+                    print(f"[OK] {d['title']} salvato in: {plot_path}")
+                detector_plots = [
+                    {
+                        "feats": {"TRA": "E_tra", "CAL": "E_cal", "TOT": "E_tot"},
+                        "xlabel": "Deposited energy (MeV)",
+                        "title": "Deposited Energy Distribution by Detector (Layer 2)",
+                        "suffix": "edep",
+                        "bin_type": "linspace"
+                    },
+                    {
+                        "feats": {"TRA": "nhits_tra", "CAL": "nhits_cal", "TOT": "nhits_tot"},
+                        "xlabel": "Number of hits",
+                        "title": "Distribution of Number of Hits by Detector (Layer 2)",
+                        "suffix": "nhits",
+                        "bin_type": "arange"
+                    }
+                ]
 
-                edep_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_edep.png"
-                plot_type_classification_comparison(
-                    true_by_category=edep_true_by_category,
-                    miss_by_category=edep_miss_by_category,
-                    all_by_category=edep_tot_by_category,
-                    output_path=edep_plot_path,
-                    xlabel="Deposited energy (MeV)",
-                    title="Deposited Energy Distribution by Detector (Layer 2)",
-                    bins=edep_bins,
-                    log_y=False,
-                    categories=["TRA", "CAL", "TOT"],
-                ) 
-                print(f"[OK] Grafico delle energie depositate degli errori salvato in: {edep_plot_path}")
-
-                # Nhits 4-panel subplot
-                nhits_true_by_category = {
-                    "TRA": nhits_tra_true,
-                    "CAL": nhits_cal_true,
-                    "TOT": nhits_tot_true,
-                }
-                nhits_miss_by_category = {
-                    "TRA": nhits_tra_miss,
-                    "CAL": nhits_cal_miss,
-                    "TOT": nhits_tot_miss,
-                }
-                nhits_tot_by_category = {
-                    "TRA": nhits_tra_true + nhits_tra_miss,
-                    "CAL": nhits_cal_true + nhits_cal_miss,
-                    "TOT": nhits_tot_true + nhits_tot_miss,
-                }
-                
-                # Extract all the integer values from the dictionaries and flatten
-                all_values = []
-                for d in [nhits_true_by_category, nhits_miss_by_category, nhits_tot_by_category]:
-                    for values_list in d.values():
-                        if values_list:
-                            all_values.extend(values_list)
-
-                # Safeguard in case ALL dictionaries were empty
-                if all_values:
-                    bins_max = int(max(all_values))
-                    nhits_bins = np.arange(0, bins_max+1, 1)
-                else:
-                    print("Warning: No hit counts found!")
-                    nhits_bins = 50  # Default fallback
-
-                nhits_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png"
-                plot_type_classification_comparison(
-                    true_by_category=nhits_true_by_category,
-                    miss_by_category=nhits_miss_by_category,
-                    all_by_category=nhits_tot_by_category,
-                    output_path=nhits_plot_path,
-                    xlabel="Number of hits",
-                    title="Distribution of Number of Hits by Detector (Layer 2)",
-                    bins=nhits_bins,
-                    log_y=False,
-                    categories=["TRA", "CAL", "TOT"],
-                )
-                print(f"[OK] Grafico delle nhits degli errori salvato in: {nhits_plot_path}")
-
-                # Tra/Cal ratio deposited energy 4-panel subplot
-                erat_true_by_category = {
-                    "CO": zpos_CO_true,
-                    "PA": zpos_PA_true,
-                    "PH": zpos_PH_true,
-                }
-                nhits_miss_by_category = {
-                    "CO": nhits_tra_miss,
-                    "PA": nhits_cal_miss,
-                    "PH": nhits_tot_miss,
-                }
-                nhits_tot_by_category = {
-                    "CO": nhits_tra_true + nhits_tra_miss,
-                    "PA": nhits_cal_true + nhits_cal_miss,
-                    "PH": nhits_tot_true + nhits_tot_miss,
-                }
-                
-                # Extract all the integer values from the dictionaries and flatten
-                all_values = []
-                for d in [nhits_true_by_category, nhits_miss_by_category, nhits_tot_by_category]:
-                    for values_list in d.values():
-                        if values_list:
-                            all_values.extend(values_list)
-
-                # Safeguard in case ALL dictionaries were empty
-                if all_values:
-                    bins_max = int(max(all_values))
-                    nhits_bins = np.arange(0, bins_max+1, 1)
-                else:
-                    print("Warning: No hit counts found!")
-                    nhits_bins = 50  # Default fallback
-
-                nhits_plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png"
-                plot_type_classification_comparison(
-                    true_by_category=nhits_true_by_category,
-                    miss_by_category=nhits_miss_by_category,
-                    all_by_category=nhits_tot_by_category,
-                    output_path=nhits_plot_path,
-                    xlabel="Number of hits",
-                    title="Distribution of Number of Hits by Detector (Layer 2)",
-                    bins=nhits_bins,
-                    log_y=False,
-                    categories=["TRA", "CAL", "TOT"],
-                )
-                print(f"[OK] Grafico delle nhits degli errori salvato in: {nhits_plot_path}")
+                for d in detector_plots:
+                    true_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
+                    miss_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
+                    
+                    # Aggregate data across ALL processes (CO + PA + PH) for each detector type
+                    for det, feat_key in d["feats"].items():
+                        for proc in processes:
+                            true_dict[det].extend(metrics["true"][proc][feat_key])
+                            miss_dict[det].extend(metrics["miss"][proc][feat_key])
+                            
+                    all_dict = {det: true_dict[det] + miss_dict[det] for det in ["TRA", "CAL", "TOT"]}
+                    
+                    # Calculate bins dynamically based on data content
+                    combined_flat = true_dict["TRA"] + true_dict["CAL"] + true_dict["TOT"] + miss_dict["TRA"] + miss_dict["CAL"] + miss_dict["TOT"]
+                    
+                    if combined_flat:
+                        if d["bin_type"] == "linspace":
+                            bins = np.linspace(min(combined_flat), max(combined_flat), 51)
+                        else: # arange
+                            bins = np.arange(0, int(max(combined_flat)) + 1, 1)
+                    else:
+                        bins = 50 # fallback
+                        
+                    plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_{d['suffix']}.png"
+                    plot_type_classification_comparison(
+                        true_by_category=true_dict, miss_by_category=miss_dict, all_by_category=all_dict,
+                        output_path=plot_path, xlabel=d["xlabel"], title=d["title"], bins=bins, log_y=False,
+                        categories=["TRA", "CAL", "TOT"]
+                    )
+                    print(f"[OK] {d['title']} salvato in: {plot_path}")
 
 if __name__ == "__main__":
     

@@ -161,7 +161,7 @@ class EventClassifierPipeline:
             return data[:, :, :n_selected], n_selected
         return None, 0
     
-
+    # "L1"
     def signal_background_classifier(self, event, onlyACDVeto=True, thr=0.99):
         """First layer: Separates signal from background"""
         
@@ -277,24 +277,23 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             continue
 
         # Level 1 and 2 probabilities
-        prob_l1 = {"UN": [], "MU": [], "SIGNAL": []}
-        prob_l2 = {"PH": [], "PA": [], "CO": [], "UN": []}
-        
-        # Master metrics dictionary combining true/miss, interaction types, and all features
-        # Structure: metrics[outcome][process_key][feature]
-        processes = ["PH", "PA", "CO"]
-        outcomes = ["true", "miss"]
+        states1 = ["UN", "MU", "SIGNAL"]
+        states2 = ["PH", "PA", "CO", "UN"]
+        mc_processes = ["COMP", "PAIR", "PHOT"]
         features = ["incident_energy", "zpos", "E_tra", "E_cal", "E_tot", "nhits_tra", "nhits_cal", "nhits_tot"]
         
+        # Structure: metrics[mc_process][layer1][layer2][feature]
         metrics = {
-            outcome: {proc: {feat: [] for feat in features} for proc in processes}
-            for outcome in outcomes
+            proc: {l1: {l2: {feat: [] for feat in features} for l2 in states2} for l1 in states1}
+            for proc in mc_processes
         }
 
+        prob_l1 = {status : [] for status in states1}
+        prob_l2 = {status : [] for status in states2}
+        
         confusion_matrix = np.zeros((3, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2}
         pred_mapping = {"CO": 0, "PA": 1, "PH": 2}
-        process_map = {"PHOT": "PH", "PAIR": "PA", "COMP": "CO"}
 
         with open(fn_out, "w") as f_out:
 
@@ -315,6 +314,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     t0 = time.perf_counter()
 
+                    # LAYER 1
                     status, prob_bkg = pipeline.signal_background_classifier(Event, onlyACDVeto)
                     
                     if status in prob_l1:
@@ -341,7 +341,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                                 confusion_matrix[true_idx, pred_idx] += 1
 
                             # Extract Data & Populate Unified Metrics Dict
-                            if Event.GetNIAs() > 0 and mc_process in process_map:
+                            if Event.GetNIAs() > 0 and mc_process in metrics:
                                 ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0 # keV to MeV
                                 zpos = Event.GetIAAt(1).GetPosition().Z()
 
@@ -349,23 +349,24 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                                 hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
                                 edep_tra = hit_data_tra[0, 3, :].sum().item()/1000 if hit_data_tra is not None else np.nan # keV to MeV
                                 edep_cal = hit_data_cal[0, 3, :].sum().item()/1000 if hit_data_cal is not None else np.nan # keV to MeV
-                                
-                                # Determine the dictionary keys
-                                proc_key = process_map[mc_process]
-                                outcome_key = 'true' if event_type == proc_key else "miss"
-                                
-                                # Target specific leaf inside metrics[outcome][process]
-                                tgt = metrics[outcome_key][proc_key]
+
+                                # Pack feature calculations cleanly
+                                extracted_features = {
+                                    "incident_energy": ia_e,
+                                    "zpos": zpos,
+                                    "E_tra": edep_tra,
+                                    "E_cal": edep_cal,
+                                    "E_tot": edep_tra + edep_cal,
+                                    "nhits_tra": n_hits_tra,
+                                    "nhits_cal": n_hits_cal,
+                                    "nhits_tot": n_hits_tra + n_hits_cal
+                                }
                                 
                                 # Append features cleanly
-                                tgt["incident_energy"].append(ia_e)
-                                tgt["zpos"].append(zpos)
-                                tgt["E_tra"].append(edep_tra)
-                                tgt["E_cal"].append(edep_cal)
-                                tgt["E_tot"].append(edep_tra + edep_cal)
-                                tgt["nhits_tra"].append(n_hits_tra)
-                                tgt["nhits_cal"].append(n_hits_cal)
-                                tgt["nhits_tot"].append(n_hits_tra + n_hits_cal)
+                                if status in metrics[mc_process] and event_type in metrics[mc_process][status]:
+                                                            target_leaf = metrics[mc_process][status][event_type]
+                                                            for feat, val in extracted_features.items():
+                                                                target_leaf[feat].append(val)
                                     
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
@@ -500,8 +501,11 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 plt.close()
                 print(f"[OK] Confusion Matrix : {matrix_path}")    
         
+            # 4-panel mis/classification plots
             if debug:
-                processes = ["CO", "PA", "PH"]
+                processes = ["PH", "PA", "CO"]
+                process_map = {"PHOT": "PH", "PAIR": "PA", "COMP": "CO"}
+
                 
                 # Helper function to generate dynamic bins across all plot types safely
                 def get_dynamic_bins(data_list, bin_rule, fallback=50):
@@ -548,7 +552,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         "calc": lambda b: np.divide(np.array(b["E_tra"]), np.array(b["E_cal"]), 
                                                     out=np.full_like(np.array(b["E_tra"]), np.nan, dtype=float), 
                                                     where=np.array(b["E_cal"]) > 0)
-                    }, # Added missing comma here
+                    },
                     {
                         "feat": "nrat", 
                         "xlabel": "Number of Hits Ratio (n_tra / n_cal)",
@@ -564,19 +568,28 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                 for p in particle_plots:
                     feat = p["feat"]
-                    true_dict, miss_dict = {}, {}
+                    true_dict = {process_map[proc]: [] for proc in mc_processes}
+                    miss_dict = {process_map[proc]: [] for proc in mc_processes}
                     
-                    for proc in processes:
-                        if p.get("calc") is not None:
-                            raw_true = p["calc"](metrics["true"][proc])
-                            raw_miss = p["calc"](metrics["miss"][proc])
-                            true_dict[proc] = raw_true[~np.isnan(raw_true)].tolist()
-                            miss_dict[proc] = raw_miss[~np.isnan(raw_miss)].tolist()
-                        else:
-                            true_dict[proc] = metrics["true"][proc][feat]
-                            miss_dict[proc] = metrics["miss"][proc][feat]
+                    for proc in mc_processes:
+                        lbl = process_map[proc]
+
+                        for l1 in metrics[proc]:
+                            for l2 in metrics[proc][l1]:
+                                leaf = metrics[proc][l1][l2]
+
+                                if p["calc"] is not None:
+                                    vals = p["calc"](leaf)
+                                    vals = vals[~np.isnan(vals)].tolist()
+                                else:
+                                    vals = leaf[feat]
+                                
+                                if l2 == lbl:
+                                    true_dict[lbl].extend(vals)
+                                else:
+                                    miss_dict[lbl].extend(vals)
                    
-                    all_dict = {proc: true_dict[proc] + miss_dict[proc] for proc in processes}
+                    all_dict = {cat: true_dict[cat] + miss_dict[cat] for cat in true_dict}
                     
                     # Unify dynamic flattening across all channels for evaluation
                     flat_data = sum(true_dict.values(), []) + sum(miss_dict.values(), [])
@@ -613,62 +626,22 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     miss_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
                     
                     for det, feat_key in d["feats"].items():
-                        for proc in processes:
-                            true_dict[det].extend(metrics["true"][proc][feat_key])
-                            miss_dict[det].extend(metrics["miss"][proc][feat_key])
+                        for proc in mc_processes:
+                            lbl = process_map[proc]
+                            for l1 in metrics[proc]:
+                                for l2 in metrics[proc][l1]:
+                                    vals = metrics[proc][l1][l2][feat_key]
+
+                                    if l2 == lbl:
+                                        true_dict[det].extend(vals)
+                                    else:
+                                        miss_dict[det].extend(vals)
                             
                     all_dict = {det: true_dict[det] + miss_dict[det] for det in ["TRA", "CAL", "TOT"]}
                     
                     # Compute flat dataset to automatically extract boundaries
                     flat_data = true_dict["TRA"] + true_dict["CAL"] + true_dict["TOT"] + miss_dict["TRA"] + miss_dict["CAL"] + miss_dict["TOT"]
                     bins = get_dynamic_bins(flat_data, d["bin_rule"])
-                        
-                    plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_{d['suffix']}.png"
-                    plot_type_classification_comparison(
-                        true_by_category=true_dict, miss_by_category=miss_dict, all_by_category=all_dict,
-                        output_path=plot_path, xlabel=d["xlabel"], title=d["title"], bins=bins, log_y=False,
-                        categories=["TRA", "CAL", "TOT"]
-                    )
-                    print(f"[OK] {d['title']} salvato in: {plot_path}")
-                detector_plots = [
-                    {
-                        "feats": {"TRA": "E_tra", "CAL": "E_cal", "TOT": "E_tot"},
-                        "xlabel": "Deposited energy (MeV)",
-                        "title": "Deposited Energy Distribution by Detector (Layer 2)",
-                        "suffix": "edep",
-                        "bin_type": "linspace"
-                    },
-                    {
-                        "feats": {"TRA": "nhits_tra", "CAL": "nhits_cal", "TOT": "nhits_tot"},
-                        "xlabel": "Number of hits",
-                        "title": "Distribution of Number of Hits by Detector (Layer 2)",
-                        "suffix": "nhits",
-                        "bin_type": "arange"
-                    }
-                ]
-
-                for d in detector_plots:
-                    true_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
-                    miss_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
-                    
-                    # Aggregate data across ALL processes (CO + PA + PH) for each detector type
-                    for det, feat_key in d["feats"].items():
-                        for proc in processes:
-                            true_dict[det].extend(metrics["true"][proc][feat_key])
-                            miss_dict[det].extend(metrics["miss"][proc][feat_key])
-                            
-                    all_dict = {det: true_dict[det] + miss_dict[det] for det in ["TRA", "CAL", "TOT"]}
-                    
-                    # Calculate bins dynamically based on data content
-                    combined_flat = true_dict["TRA"] + true_dict["CAL"] + true_dict["TOT"] + miss_dict["TRA"] + miss_dict["CAL"] + miss_dict["TOT"]
-                    
-                    if combined_flat:
-                        if d["bin_type"] == "linspace":
-                            bins = np.linspace(min(combined_flat), max(combined_flat), 51)
-                        else: # arange
-                            bins = np.arange(0, int(max(combined_flat)) + 1, 1)
-                    else:
-                        bins = 50 # fallback
                         
                     plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_{d['suffix']}.png"
                     plot_type_classification_comparison(

@@ -12,13 +12,13 @@ StoreSimulationInfo         all
 
 # Run & source parameters
 Run SpaceSim
-SpaceSim.FileName           ComPair23_100keV_50MeV_powerlaw_100k
+SpaceSim.FileName           ComPair23_100keV_50MeV_linear_100k
 SpaceSim.Triggers           100000
 
 SpaceSim.Source Linear
 Linear.ParticleType        1
 Linear.Beam                FarFieldAreaSource 0 60 0 360
-#Linear.Spectrum            Linear 1000.0 50000.0
-Linear.Spectrum 	   PowerLaw 100.0 50000.0 1.0
+Linear.Spectrum            Linear 100.0 50000.0
+#Linear.Spectrum 	   PowerLaw 100.0 50000.0 1.0
 Linear.Flux                1.0
 

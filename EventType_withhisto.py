@@ -14,6 +14,9 @@ import numpy as np
     
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
 
+# =====================
+# Plot helper functions
+# =====================
 
 def plot_type_classification_comparison(true_by_category, miss_by_category, all_by_category, output_path, xlabel, title, bins=50, log_y=True, categories=None):
     """Create a 2x2 comparison layout with counts and misclassification ratio panels."""
@@ -204,6 +207,93 @@ def plot_stacked_energy_spectrum(metrics, mc_processes, states1, output_path, bi
     plt.close(fig)
 
 
+def record_debug_info(event, status, event_type, metrics, confusion_matrix, excluded_from_metrics, mc_mapping, pred_mapping, pipeline):
+    """Debug-mode bookkeeping for a single event: this is the ONE place where
+    `metrics`, `confusion_matrix`, and `excluded_from_metrics` get populated.
+
+    Called once per event, only when --debug is set. Returns the true MC
+    process string (or "UNKNOWN"), which the caller prints to the .etp file.
+
+    What gets written where, and when:
+      - confusion_matrix[true_idx, pred_idx] += 1
+            Only for L1 status == "SIGNAL" events whose true process resolved
+            to one of COMP/PAIR/PHOT. Compares the L2 classifier's prediction
+            (event_type) against the true process and populates the matrix accordingly.
+      - metrics[mc_process][status][event_type][<feature>].append(...)
+            For ANY L1 status (UN, MU, or SIGNAL), as long as the true process
+            resolved to COMP/PAIR/PHOT. This is what feeds the stacked energy
+            spectrum plot (all three L1 statuses) AND the "wrong predictions"
+            Layer-2 diagnostic plots (SIGNAL only, filtered later — see
+            `signal_leaves` further down).
+      - excluded_from_metrics[status] += 1
+            Whenever an event was counted in prob_l1 (i.e. every event) but
+            could NOT be matched into `metrics` above — e.g. because the MC
+            truth chain was too short to resolve (see the GetNIAs() check
+            below), or resolved to some process other than COMP/PAIR/PHOT.
+            Lets you reconcile prob_l1 totals against metrics-derived totals.
+    """
+    mc_process = "UNKNOWN"
+    stored_in_metrics = False
+
+    # GetIAAt(0) is always the primary particle's own generation record, not a
+    # real interaction — the *first actual interaction* is GetIAAt(1). That
+    # means we need at least 2 recorded interactions (GetNIAs() > 1) before
+    # GetIAAt(1) is safe to call at all.
+    if event.GetNIAs() > 1:
+        mc_process = str(event.GetIAAt(1).GetProcess().Data())
+
+        # --- confusion_matrix: predicted L2 label vs. true MC process ---
+        # Only meaningful for events that actually reached the L2 classifier (i.e., SIGNAL).
+        if status == "SIGNAL" and mc_process in mc_mapping and event_type in pred_mapping:
+            true_idx = mc_mapping[mc_process]
+            pred_idx = pred_mapping[event_type]
+            confusion_matrix[true_idx, pred_idx] += 1
+
+        # --- metrics: per (true_process, L1 status, L2 label) feature store ---
+        # Only store metrics for the three MC processes we care about (COMP, PAIR, PHOT)
+        if mc_process in metrics: 
+
+            # Get the info (features)
+            ia_e = event.GetIAAt(0).GetSecondaryEnergy() / 1000.0  # keV -> MeV
+            zpos = event.GetIAAt(1).GetPosition().Z()
+            hit_data_tra, n_hits_tra = pipeline.extract_hit_data(event, detId=1)
+            hit_data_cal, n_hits_cal = pipeline.extract_hit_data(event, detId=2)
+            edep_tra = hit_data_tra[0, 3, :].sum().item() / 1000 if hit_data_tra is not None else np.nan  # keV -> MeV
+            edep_cal = hit_data_cal[0, 3, :].sum().item() / 1000 if hit_data_cal is not None else np.nan  # keV -> MeV
+
+            extracted_features = {
+                "incident_energy": ia_e,
+                "zpos": zpos,
+                "E_tra": edep_tra,
+                "E_cal": edep_cal,
+                "E_tot": edep_tra + edep_cal,
+                "nhits_tra": n_hits_tra,
+                "nhits_cal": n_hits_cal,
+                "nhits_tot": n_hits_tra + n_hits_cal,
+            }
+
+            # Store the extracted features in the metrics dictionary:
+            # status is the L1 classification (UN, MU, SIGNAL)
+            # event_type is the L2 classification (PH, PA, CO, UN)
+            # target_leaf is the specific list in metrics where we want to append the features
+            if status in metrics[mc_process] and event_type in metrics[mc_process][status]:
+                target_leaf = metrics[mc_process][status][event_type]
+                for feat, val in extracted_features.items():
+                    target_leaf[feat].append(val)
+                stored_in_metrics = True
+
+    # If the event was counted in prob_l1 but could not be stored in metrics (e.g., unknown MC process), 
+    # increment the excluded_from_metrics counter for that L1 status.
+    if not stored_in_metrics and status in excluded_from_metrics:
+        excluded_from_metrics[status] += 1
+
+    # Return the true MC process string (or "UNKNOWN") for logging in the .etp output file.
+    return mc_process
+
+# =================================================
+# Important: classification layers, event breakdown
+# =================================================
+
 class EventClassifierPipeline:
 
     def __init__(self, model_traced_path, onlyACDVeto=True, random_forest_path=None, lookup_path=None):
@@ -227,6 +317,14 @@ class EventClassifierPipeline:
         self.model.eval()  
 
     def extract_hit_data(self, event, detId=None):
+        ''' 
+        Extracts hit data from the event and returns data, nhits.
+        data is a tensor of shape [1, 4, nhits].
+        The first dimension is the batch size (1), the second dimension is x,y,z,E (4), and the third dimension is the number of hits (nhits).
+        If detId is specified, only hits from that detector type are extracted.
+
+        '''
+        # For Claude, is that the right comment for this function? Also, can n_hits be extracted from data? If so please do so and change it downstream
         nhits = event.GetNHTs()
         if nhits == 0:
             return None, 0
@@ -254,16 +352,24 @@ class EventClassifierPipeline:
         return None, 0
     
     # "L1"
-    def signal_background_classifier(self, event, onlyACDVeto=True, thr=0.99):
-        """First layer: Separates signal from background"""
+    def signal_background_classifier(self, event, debug= False, onlyACDVeto=True, thr=0.99):
+        """
+        First layer: Checks if the event is background or a signal.
+        Returns the classification (str) and the probability (float) of that classification.
+        """
         
+        # If for some reason the event is None, return unknown with probability 1.0
         if not event:
+            if debug: print(f"Warning: Event ID {event.GetID()} received None event. Returning 'UN' with probability 1.0")
             return "UN", 1.00
-            
+        
+        # 0 hits is unknown
         nhits = event.GetNHTs()
         if nhits == 0:
+            if debug: print(f"Warning: Event ID {event.GetID()} has 0 hits. Returning 'UN' with probability 1.0")
             return "UN", 1.00
 
+        # Check for ACD hits. If there are any, classify as MU with high probability.
         nhits_ACD  = 0
         for i in range(nhits):
             if event.GetHTAt(i).GetDetectorType() == 4:
@@ -271,6 +377,7 @@ class EventClassifierPipeline:
         if nhits_ACD > 0:  
             return "MU", 0.99  
 
+        # If there are no ACD hits, use PCA to classify as SIGNAL or MU.
         if not onlyACDVeto:
             data, _ = self.extract_hit_data(event, 1)
             prob = pca.analyze(data, event.GetTotalEnergyDeposit(), rf=self.pca_classifier, thr=thr)
@@ -280,38 +387,55 @@ class EventClassifierPipeline:
         else:
             return "SIGNAL", 1.00
 
-    def type_of_signal(self, event):
+    #"L2"
+    def type_of_signal(self, event, debug):
         """Second layer: Checks if the event is a Photoelectric effect.
         If not, use PointNet to discriminate between Compton and Pair.
+        Returns the classification (str) and the probability (float) of that type.
         """
+
+        # Should never enter here, given that the first layer already checks for None events, but just in case.
         if not event:
+            if debug: print(f"Warning: Event ID {event.GetID()} received None event at the second layer. Returning 'UN' with probability 1.0")
             return "UN", 1.00
         
         nhits = event.GetNHTs()
-                
+        
+        # Should never enter here, given that the first layer already checks for 0 hits, but just in case.
         if nhits == 0:
+            if debug: print(f"Warning: Event ID {event.GetID()} has 0 hits at the second layer. Returning 'UN' with probability 1.0")
             return "UN", 1.00
 
-        # 1.Cut for  Photoelectric effect (PHOT)
+        # 1.Cut for  Photoelectric effect (PHOT), less than 2 hits is likely a photoelectric effect. Return 'PH' with probability 0.50 (uncertain).
         if not nhits > 2:
             return "PH", 0.50  # 'PH' for Photoelectric
 
         # 2. If not Photoelectric, extract hit data and execute PointNet
         data_input, _ = self.extract_hit_data(event)
 
+        # Should never enter here, given that the first layer already checks for None events, but just in case.
         if data_input is None or data_input.shape[2] == 0:
+            if debug: print(f"Warning: Event ID {event.GetID()} has invalid hit data at the second layer. Returning 'UN' with probability 1.0")
             return "UN", 1.00
 
+        # 3. Run the PointNet model to classify between Compton and Pair Production
         with torch.no_grad():
             logits, _ = self.model(data_input)
             prob = torch.sigmoid(logits).item()
 
+        # 4. Return the classification and probability based on the logits
         if logits >= 0:
             return "PA", prob  # 'PA' for Pair Production
         elif logits < 0:
             return "CO", 1.0 - prob  # 'CO' for Compton Scattering
 
+        # 5. Fallback case, should not be reached
+        if debug: print(f"Warning: Event ID {event.GetID()} reached fallback case at the second layer. Returning 'UN' with probability 1.0")
         return "UN", 1.00
+
+# ====================================================================================
+# Main function to process input files, classify events, and generate output and plots
+# ====================================================================================
 
 def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False):
 
@@ -369,39 +493,64 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             continue
 
         # Level 1 and 2 probabilities
-        states1 = ["UN", "MU", "SIGNAL"]
-        states2 = ["PH", "PA", "CO", "UN"]
-        mc_processes = ["COMP", "PAIR", "PHOT"]
+        mc_processes = ["COMP", "PAIR", "PHOT"]                # possible TRUE MC processes (from simulation truth)
+        states1 = ["UN", "MU", "SIGNAL"]                       # possible L1 (signal-vs-background) outcomes
+        states2 = ["PH", "PA", "CO", "UN"]                     # possible L2 (photon-type) outcomes
         features = ["incident_energy", "zpos", "E_tra", "E_cal", "E_tot", "nhits_tra", "nhits_cal", "nhits_tot"]
-        
-        # Structure: metrics[mc_process][layer1][layer2][feature]
+
+        # --------------------------------------------------------------------
+        # Data-flow legend — every dict below is populated in exactly one
+        # place, referenced here so it's easy to trace:
         #
-        # The L2 leaf keys are states2 PLUS "MU". This matters because an L1
-        # status of "MU" never goes through the L2 classifier at all — main()
-        # sets event_type = status ("MU") directly instead of calling
-        # type_of_signal(). Without "MU" as a valid leaf key here, every MU
-        # event's features were silently dropped (event_type not in
-        # metrics[mc_process]["MU"]), which is why MU always showed up empty
-        # downstream (e.g. in the stacked energy spectrum).
-        metrics_leaf_keys = states2 + ["MU"]
+        #   prob_l1[status]  -> list of L1 probabilities, keyed by L1 state ("UN", "MU", "SIGNAL").
+        #       Populated for EVERY event, right after signal_background_classifier() runs
+        #       (see "prob_l1[status].append(...)" below). Always in sync
+        #       with the number of events read, regardless of --debug.
+        #
+        #   prob_l2[event_type] -> list of L2 probabilities, keyed by L2 label ("PH", "PA", "CO", "UN").
+        #       Populated only for events with L1 state == "SIGNAL", right
+        #       after type_of_signal() runs (see "prob_l2[event_type].append(...)").
+        #
+        #   metrics[mc_process][l1_state][l2_label][feature] -> list of values.
+        #       Populated only in --debug mode, and only for events whose true
+        #       MC process resolved to one of COMP/PAIR/PHOT. All the writing
+        #       happens inside record_debug_info() (defined above main()).
+        #       Feeds: the stacked energy spectrum (uses all 3 l1_state) and
+        #       the "wrong predictions" Layer-2 plots (SIGNAL only).
+        #
+        #   confusion_matrix[true_idx, pred_idx] -> int counts.
+        #       Populated only in --debug mode, only for SIGNAL events with a
+        #       resolvable true process. Also written inside record_debug_info().
+        #
+        #   excluded_from_metrics[status] -> int counts.
+        #       Populated only in --debug mode: counts events present in
+        #       prob_l1 but that record_debug_info() could NOT store in
+        #       `metrics` (no resolvable MC truth). Use this to reconcile
+        #       prob_l1 totals against metrics-derived totals.
+        # --------------------------------------------------------------------
+
+        # metrics is a nested dict-of-dict-of-dict-of-dict structure, keyed by:
+        #   mc_process (COMP, PAIR, PHOT)
+        #     -> l1_state (UN, MU, SIGNAL)
+        #       -> l2_label (PH, PA, CO, UN)
+        #         -> feature (incident_energy, zpos, E_tra, E_cal, E_tot, nhits_tra, nhits_cal, nhits_tot)
         metrics = {
-            proc: {l1: {l2: {feat: [] for feat in features} for l2 in metrics_leaf_keys} for l1 in states1}
+            proc: {l1: {l2: {feat: [] for feat in features} for l2 in states2} for l1 in states1}
             for proc in mc_processes
         }
 
-        prob_l1 = {status : [] for status in states1}
-        prob_l2 = {status : [] for status in states2}
-        
+        # Prepare the probability dictionaries for L1 and L2 classifications. 
+        # These will store the probabilities for each event, indexed by their respective states.
+        prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
+        prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
+
         confusion_matrix = np.zeros((3, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2}
         pred_mapping = {"CO": 0, "PA": 1, "PH": 2}
 
-        # Counts events per L1 status that get counted in prob_l1 but never make it
-        # into `metrics` (because GetNIAs() <= 1, or the 2nd interaction's process
-        # isn't literally one of COMP/PAIR/PHOT). This is what causes the
-        # metrics-derived plots (e.g. the stacked energy spectrum) to sum to
-        # slightly less than the corresponding prob_l1 bin.
-        excluded_from_metrics = {status: 0 for status in states1}
+        # This dictionary keeps track of how many events were excluded from metrics-based plots due to unresolvable MC truth. 
+        # It is initialized with zero counts for each L1 state (UN, MU, SIGNAL).
+        excluded_from_metrics = {state: 0 for state in states1}
 
         with open(fn_out, "w") as f_out:
 
@@ -422,65 +571,44 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     t0 = time.perf_counter()
 
-                    # LAYER 1
-                    status, prob_bkg = pipeline.signal_background_classifier(Event, onlyACDVeto)
-                    
+                    # LAYER 1 — classify signal vs. background
+                    # status can be "SIGNAL", "MU", or "UN".
+                    # prob_bkg is the probability of that status.
+                    status, prob_bkg = pipeline.signal_background_classifier(Event, debug=debug, onlyACDVeto=onlyACDVeto)
+
+                    # prob_l1 gets populated HERE, for every single event, regardless of --debug.
                     if status in prob_l1:
                         prob_l1[status].append(prob_bkg)
 
+                    # Only the SIGNAL events reach L2, so we only call type_of_signal() for those. 
+                    # MU and UN events are never classified further, and their "event_type" is just their L1 status.
                     if status == "SIGNAL":
-                        event_type, probability = pipeline.type_of_signal(Event)
+                        # LAYER 2 — only run for events that passed L1 as signal.
+                        event_type, probability = pipeline.type_of_signal(Event, debug=debug)
+                        # prob_l2 gets populated HERE, only for L1 status == "SIGNAL".
                         if event_type in prob_l2:
                             prob_l2[event_type].append(probability)
                     else:
+                        # MU/UN events never reach L2, so their "event_type" is just their L1 status.
+                        # However, prob_l2 never gets populated with these events. 
                         event_type, probability = status, prob_bkg
                     
                     t_classify += time.perf_counter() - t0
 
                     t0 = time.perf_counter()
                     if debug:
-                        mc_process = "UNKNOWN"
-                        stored_in_metrics = False
-                        if Event.GetNIAs() > 1:
-                            mc_process = str(Event.GetIAAt(1).GetProcess().Data())
-                            # Update confusion matrix
-                            if status == "SIGNAL" and mc_process in mc_mapping and event_type in pred_mapping:
-                                true_idx = mc_mapping[mc_process]
-                                pred_idx = pred_mapping[event_type]
-                                confusion_matrix[true_idx, pred_idx] += 1
-
-                            # Extract Data & Populate Unified Metrics Dict
-                            if Event.GetNIAs() > 0 and mc_process in metrics:
-                                ia_e = Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0 # keV to MeV
-                                zpos = Event.GetIAAt(1).GetPosition().Z()
-
-                                hit_data_tra, n_hits_tra = pipeline.extract_hit_data(Event, detId=1)
-                                hit_data_cal, n_hits_cal = pipeline.extract_hit_data(Event, detId=2)
-                                edep_tra = hit_data_tra[0, 3, :].sum().item()/1000 if hit_data_tra is not None else np.nan # keV to MeV
-                                edep_cal = hit_data_cal[0, 3, :].sum().item()/1000 if hit_data_cal is not None else np.nan # keV to MeV
-
-                                # Pack feature calculations cleanly
-                                extracted_features = {
-                                    "incident_energy": ia_e,
-                                    "zpos": zpos,
-                                    "E_tra": edep_tra,
-                                    "E_cal": edep_cal,
-                                    "E_tot": edep_tra + edep_cal,
-                                    "nhits_tra": n_hits_tra,
-                                    "nhits_cal": n_hits_cal,
-                                    "nhits_tot": n_hits_tra + n_hits_cal
-                                }
-                                
-                                # Append features cleanly
-                                if status in metrics[mc_process] and event_type in metrics[mc_process][status]:
-                                                            target_leaf = metrics[mc_process][status][event_type]
-                                                            for feat, val in extracted_features.items():
-                                                                target_leaf[feat].append(val)
-                                                            stored_in_metrics = True
-
-                        if not stored_in_metrics and status in excluded_from_metrics:
-                            excluded_from_metrics[status] += 1
-
+                        # All of metrics / confusion_matrix / excluded_from_metrics get
+                        # written inside this one call 
+                        # Returns the true MC process string (or "UNKNOWN"), which the caller prints to the .etp file.
+                        mc_process = record_debug_info(
+                            Event, status, event_type,
+                            metrics=metrics,
+                            confusion_matrix=confusion_matrix,
+                            excluded_from_metrics=excluded_from_metrics,
+                            mc_mapping=mc_mapping,
+                            pred_mapping=pred_mapping,
+                            pipeline=pipeline,
+                        )
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
                             file=f_out,
@@ -518,7 +646,9 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     f"MU={excluded_from_metrics['MU']}, UN={excluded_from_metrics['UN']}, SIGNAL={excluded_from_metrics['SIGNAL']}"
                 )
 
-          
+            # ================
+            # Plotting section
+            # ================
             print("[INFO] Plots...")
 
             # L1 categories plot
@@ -625,14 +755,11 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         return np.arange(0, int(max(data_list)) + 1, 1)
                     return fallback # Default fallback if an explicit bin array was provided
 
-                # Flatten metrics[proc][l1][l2] once. Each of the plot configs below
-                # previously re-walked this same nested dict from scratch (6 full
-                # traversals total); we now walk it once and reuse the flat list.
-                leaves = [
-                    (proc, l1, l2, metrics[proc][l1][l2])
+                # Prepare a list of tuples (proc, l2, leaf) for all SIGNAL events across all MC processes
+                signal_leaves = [
+                    (proc, l2, metrics[proc]["SIGNAL"][l2])
                     for proc in mc_processes
-                    for l1 in metrics[proc]
-                    for l2 in metrics[proc][l1]
+                    for l2 in metrics[proc]["SIGNAL"]
                 ]
 
                 # =================================================================
@@ -686,7 +813,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     true_dict = {process_map[proc]: [] for proc in mc_processes}
                     miss_dict = {process_map[proc]: [] for proc in mc_processes}
 
-                    for proc, l1, l2, leaf in leaves:
+                    for proc, l2, leaf in signal_leaves:
                         lbl = process_map[proc]
 
                         if p["calc"] is not None:
@@ -737,7 +864,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     miss_dict = {det: [] for det in ["TRA", "CAL", "TOT"]}
 
                     for det, feat_key in d["feats"].items():
-                        for proc, l1, l2, leaf in leaves:
+                        for proc, l2, leaf in signal_leaves:
                             lbl = process_map[proc]
                             vals = leaf[feat_key]
 
@@ -760,6 +887,9 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     )
                     print(f"[OK] {d['title']} saved to: {plot_path}")
 
+# =========================
+# Main function and parsing
+# =========================
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(

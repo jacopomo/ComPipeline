@@ -104,12 +104,10 @@ def plot_type_classification_comparison(true_by_category, miss_by_category, all_
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
-
 def plot_bar_counts(categories, counts, colors, title, output_path, ylabel="Events"):
     """Simple bar chart of counts-per-category with value labels above each bar.
 
-    Shared by the L1 and L2 "counts" plots, which were previously two
-    hand-copied blocks of identical code.
+    Shared by the L1 and L2 "counts" plots.
     """
     plt.figure(figsize=(8, 5))
     bars = plt.bar(categories, counts, color=colors, edgecolor="black", alpha=0.7)
@@ -124,12 +122,10 @@ def plot_bar_counts(categories, counts, colors, title, output_path, ylabel="Even
     plt.savefig(output_path, dpi=300)
     plt.close()
 
-
 def plot_overlaid_probabilities(prob_dict, hist_configs, title, output_path, bins=50, value_range=(0, 1)):
     """Overlaid (stepfilled) probability histograms for a set of categories.
 
-    Shared by the L1 and L2 "probabilities" plots, which were previously two
-    hand-copied blocks of identical code.
+    Shared by the L1 and L2 "probabilities" plots.
 
     hist_configs: list of (category_key, label, face_color, edge_color) tuples.
     """
@@ -144,7 +140,6 @@ def plot_overlaid_probabilities(prob_dict, hist_configs, title, output_path, bin
     plt.legend()
     plt.savefig(output_path, dpi=300)
     plt.close()
-
 
 def plot_stacked_energy_spectrum(metrics, mc_processes, states1, output_path, bins=None):
     """1x3 stacked-histogram energy spectrum.
@@ -195,11 +190,12 @@ def plot_confusion_matrix(confusion_matrix, output_path):
     im = ax.imshow(confusion_matrix, interpolation='nearest', cmap=plt.cm.Blues)
     ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     
-    labels = ['Compton (CO)', 'Pair (PA)', 'Photo (PH)']
+    xlabels = ['Compton', 'Pair', 'Photo']
+    ylabels = ['Compton', 'Pair', 'Photo', 'Other']
     ax.set_xticks(np.arange(3))
-    ax.set_yticks(np.arange(3))
-    ax.set_xticklabels(labels)
-    ax.set_yticklabels(labels)
+    ax.set_yticks(np.arange(4))
+    ax.set_xticklabels(xlabels)
+    ax.set_yticklabels(ylabels)
     
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
     
@@ -208,7 +204,7 @@ def plot_confusion_matrix(confusion_matrix, output_path):
     # underneath in parentheses.
     thresh = confusion_matrix.max() / 2. if confusion_matrix.max() > 0 else 1
     row_sums = confusion_matrix.sum(axis=1)
-    for row in range(3):
+    for row in range(4):
         row_total = row_sums[row]
         for col in range(3):
             count = confusion_matrix[row, col]
@@ -218,8 +214,8 @@ def plot_confusion_matrix(confusion_matrix, output_path):
                     color="white" if count > thresh else "black",
                     fontweight='bold')
     
-    ax.set_title("Confusion Matrix 3x3 (L2 Layer)", fontsize=12, fontweight='bold')
-    ax.set_xlabel('Predicted Label', fontweight='bold')
+    ax.set_title("Confusion Matrix (L2 Layer)", fontsize=12, fontweight='bold')
+    ax.set_xlabel('Predicted Process', fontweight='bold')
     ax.set_ylabel('True MC Label', fontweight='bold')
     fig.tight_layout()
     

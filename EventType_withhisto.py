@@ -35,6 +35,10 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
             true_idx = mc_mapping[mc_process]
             pred_idx = pred_mapping[event_type]
             confusion_matrix[true_idx, pred_idx] += 1
+        if status == "SIGNAL" and mc_process not in mc_mapping:
+            true_idx = mc_mapping["OTHER"]
+            pred_idx = pred_mapping[event_type]
+            confusion_matrix[true_idx, pred_idx] += 1
 
         # --- metrics: per (true_process, L1 status, L2 label) feature store ---
         # Only store metrics for the three MC processes we care about (COMP, PAIR, PHOT) not RAYL!
@@ -71,7 +75,7 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
         else:
             # Log events with unrecognized MC process (not COMP, PAIR, PHOT)
             if log_file:
-                log_file.write(f"ID {event.GetID()}: Unrecognized MC process '{mc_process}' (not COMP, PAIR, PHOT)\n")
+                log_file.write(f"ID {event.GetID()}: Unrecognized MC process '{mc_process}' classified as {status} (L1) - {event_type} (L2)\n")
     else:
         # Log events with unresolvable MC truth (GetNIAs() <= 1)
         if log_file:
@@ -191,8 +195,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
 
-        confusion_matrix = np.zeros((3, 3), dtype=int)
-        mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2}
+        confusion_matrix = np.zeros((4, 3), dtype=int)
+        mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2, "OTHER": 3}
         pred_mapping = {"CO": 0, "PA": 1, "PH": 2}
         
         # Open log file for debug output

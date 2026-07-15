@@ -93,7 +93,7 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
 # Main function to process input files, classify events, and generate output and plots
 # ====================================================================================
 
-def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False):
+def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False):
 
     # Global MEGAlib initialization
     G = M.MGlobal()
@@ -125,8 +125,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         return
 
     # Initiate the pipeline object
-    pipeline = EventClassifierPipeline(model_traced, onlyACDVeto=onlyACDVeto, random_forest_path=rf, lookup_path=lookup_path)
-
+    pipeline = EventClassifierPipeline(model_traced, onlyACDVeto=onlyACDVeto, random_forest_path=rf, lookup_path=lookup_path, three_class=three_class)
     path_out_dir = Path(output_dir)
     path_out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -510,11 +509,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Event Classifier Pipeline for MEGAlib simulation files."
     )
-
     parser.add_argument(
         "-i", "--input", 
         type=str, 
-        default="./ComPair23_1MeV_50MeV_powerlaw.p1.inc10.id1.sim.gz",
+        default="./mini_test.sim.gz",
         help="Path to a single .sim/.sim.gz file OR to a directory containing them."
     )
     parser.add_argument(
@@ -532,46 +530,82 @@ if __name__ == "__main__":
     parser.add_argument(
         "-m", "--model", 
         type=str, 
-        default="./PointNetModels/test_torch_model_params_final_26-06.pth",
-        help="Path to the PointNet model weights file (.pt)."
+        default=None,
+        help="Path to the PointNet model weights file (.pt). If omitted, defaults to "
+             "the 2-class or 3-class checkpoint depending on whether -3c/--three-class is set."
     )
-    
     parser.add_argument(
         "--disable-onlyacd", 
         action="store_false", 
         dest="only_acd_veto",
-        help="Disable the strict ACD-only veto and enable the Random Forest/PCA layer."
+        help="Disable the strict ACD-only veto and enable the Random Forest/PCA layer "
+             "(implied automatically if -rf or -pca is provided)."
     )
     parser.add_argument(
         "-rf", "--random-forest", 
         type=str, 
-        default=None, #"./RandomForest/vega_model.pkl",
-        help="Path to the Random Forest model pickle file (used only if ACD-only veto is disabled)."
+        default=None,
+        help="Path to the Random Forest model file (.skops). Providing this flag "
+             "automatically disables the ACD-only veto."
     )
     parser.add_argument(
         "-pca", "--pca", 
         type=str, 
         default=None, #"./pca_files",
-        help="LookupTable pca."
+        help="Path to the lookup-table pca file. Providing this flag automatically "
+             "disables the ACD-only veto."
     )
-
     parser.add_argument(
         "--debug", 
         action="store_true", 
         help="Enable debug mode to print MC true processes into the output file."
     )
+    parser.add_argument(
+        "-3c", "--three-class",
+        action="store_true",
+        dest="three_class",
+        help="Use the 3-class PointNet model (PointNetModels/pointnet3C.py) instead "
+             "of the default 2-class model (PointNetModels/pointnet2C.py)."
+    )
 
     # Parse the arguments from command line
     args = parser.parse_args()
+
+    DEFAULT_RF_PATH = "./RandomForest/vega_model.skops"
+    DEFAULT_MODEL_PATH_2C = "./PointNetModels/test_torch_model_params_final_26-06.pth"
+    DEFAULT_MODEL_PATH_3C = "./PointNetModels/test_torch_model_params_3c_nhits.pth"
+
+    if args.random_forest is not None and args.pca is not None:
+        parser.error(
+            "--random-forest/-rf and --pca/-pca are mutually exclusive: "
+            "choose only one background classifier."
+        )
+
+    # Explicitly asking for -rf or -pca implies you want the veto disabled:
+    # no need to also pass --disable-onlyacd.
+    if args.random_forest is not None or args.pca is not None:
+        args.only_acd_veto = False
+
+    # If the veto is disabled (via --disable-onlyacd alone) but neither -rf nor
+    # -pca was given, fall back to the default Random Forest model path.
+    rf_path = args.random_forest
+    if not args.only_acd_veto and rf_path is None and args.pca is None:
+        rf_path = DEFAULT_RF_PATH
+
+    # If -m/--model wasn't given, pick the default checkpoint matching -3c/--three-class.
+    model_path = args.model
+    if model_path is None:
+        model_path = DEFAULT_MODEL_PATH_3C if args.three_class else DEFAULT_MODEL_PATH_2C
 
     # Pass the parsed arguments directly to the main function
     main(
         input_path=args.input, 
         output_dir=args.output_dir, 
         geometry_name=args.geometry, 
-        model_traced=args.model, 
+        model_traced=model_path, 
         onlyACDVeto=args.only_acd_veto, 
-        rf=None if args.pca is not None else args.random_forest,
+        rf=None if args.pca is not None else rf_path,
         lookup_path=args.pca,
-        debug=args.debug
+        debug=args.debug,
+        three_class=args.three_class
     )

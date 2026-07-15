@@ -1,13 +1,21 @@
 import torch
 import pca
-from PointNetModels.pointnet2C import PointNet
 # =================================================
 # Important: classification layers, event breakdown
 # =================================================
 
 class EventClassifierPipeline:
 
-    def __init__(self, model_traced_path, onlyACDVeto=True, random_forest_path=None, lookup_path=None):
+    def __init__(self, model_traced_path, onlyACDVeto=True, random_forest_path=None, lookup_path=None, three_class=False):
+        self.three_class = three_class
+
+        if three_class:
+            print("Using 3-class PointNet model (PointNetModels/pointnet3C.py)")
+            from PointNetModels.pointnet3C import PointNet
+        else:
+            print("Using 2-class PointNet model (PointNetModels/pointnet2C.py)")
+            from PointNetModels.pointnet2C import PointNet
+
         if not onlyACDVeto:
             if random_forest_path is not None:
                 print(f"Loading RF model from {random_forest_path}...")
@@ -100,7 +108,11 @@ class EventClassifierPipeline:
     #"L2"
     def type_of_signal(self, event, debug, log_file=None):
         """Second layer: Checks if the event is a Photoelectric effect.
-        If not, use PointNet to discriminate between Compton and Pair.
+
+        If not, use PointNet to discriminate the event topology:
+        - binary model  -> Compton vs Pair
+        - 3-class model -> Compton vs Pair vs PH
+
         Returns the classification (str) and the probability (float) of that type.
         """
 
@@ -123,21 +135,39 @@ class EventClassifierPipeline:
 
         # 2. If not Photoelectric, extract hit data and execute PointNet
         data_input = self.extract_hit_data(event)
+        
+        # 3. Dispatch to the head matching the loaded model
+        if self.three_class:
+            return self._type_of_signal_3class(data_input)
+        else:
+            return self._type_of_signal_binary(data_input)
 
-        # Should never enter here, given that the first layer already checks for None events, but just in case.
-        if data_input is None or data_input.shape[2] == 0:
-            return "UN", 1.00
-
-        # 3. Run the PointNet model to classify between Compton and Pair Production
+    def _type_of_signal_binary(self, data_input):
+        """PointNet binary head: single scalar logit -> sigmoid + threshold at 0."""
+        # Run the PointNet model to classify between Compton and Pair Production
         with torch.no_grad():
             logits, _ = self.model(data_input)
             prob = torch.sigmoid(logits).item()
 
-        # 4. Return the classification and probability based on the logits
+        # Return the classification and probability based on the logits
         if logits >= 0:
             return "PA", prob  # 'PA' for Pair Production
         elif logits < 0:
             return "CO", 1.0 - prob  # 'CO' for Compton Scattering
 
-        # 5. Fallback case, should not be reached
+        # Fallback case, should not be reached
         return "UN", 1.00
+
+    def _type_of_signal_3class(self, data_input):
+        """PointNet 3-class head: 3 logits (Compton, Pair, Photoelectric) -> softmax + argmax."""
+        label_map = {0: "CO", 1: "PA", 2: "PH"}  # same order used in training
+        
+        # Run the PointNet model to classify between Compton, Pair and Photoelectric
+        with torch.no_grad():
+            logits, _ = self.model(data_input)            # shape [1, 3]
+            probs = torch.softmax(logits, dim=1)           # softmax
+            pred_idx = torch.argmax(probs, dim=1).item()   # class with highest probability
+            prob = probs[0, pred_idx].item()
+
+        return label_map[pred_idx], prob
+

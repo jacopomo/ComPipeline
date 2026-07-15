@@ -2,6 +2,7 @@
 /output_etp
 /output_etp_histo
 /simgz
+/backgrounds
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

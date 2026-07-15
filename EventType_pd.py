@@ -6,38 +6,49 @@ import pandas as pd
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter_pd import (
-    make_category_counts_plot,
-    make_probabilities_plot,
-    make_energy_spectrum_plot,
-    make_confusion_matrix_plot,
-    make_particle_comparison_plot,
-    make_detector_comparison_plot,
-)
+from EventType_plotter_pd import plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_particle_comparison_plot
 from EventClassifierPipeline import EventClassifierPipeline
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
+def record_debug_info(event, status, event_type, row_dict, confusion_matrix, mc_mapping, pred_mapping, pipeline, log_file=None):
+    """Debug-mode bookkeeping for a single event.
 
+    Called once per event, only when --debug is set. Returns the true MC
+    process string (or "UNKNOWN"), which the caller prints to the .etp file.
 
-def extract_debug_info(event, status, event_type, pipeline, log_file=None):
-    """Debug-mode truth resolution + feature extraction for a single event.
-
-    Returns (mc_process, feature_dict).
-    feature_dict is None when truth is unresolvable (GetNIAs() <= 1) or when
-    the true process isn't one of COMP/PAIR/PHOT (matches old behavior, which
-    only ever populated `metrics` for those three).
+    Logs to file:
+      - Events where GetNIAs() <= 1 (unresolvable MC truth)
+      - Events where a SIGNAL event (L1) does not classify as PH, CO, or PA (L2)
     """
     mc_process = "UNKNOWN"
-    feat_dict = None
 
-    # GetIAAt(0) is always the primary particle's own generation record, not a
-    # real interaction — the first actual interaction is GetIAAt(1). That
-    # means we need at least 2 recorded interactions (GetNIAs() > 1) before
-    # GetIAAt(1) is safe to call at all.
     if event.GetNIAs() > 1:
         mc_process = str(event.GetIAAt(1).GetProcess().Data())
 
-        if mc_process in ("COMP", "PAIR", "PHOT"):
+        # --- confusion_matrix: predicted L2 label vs. true MC process ---
+        if status == "SIGNAL" and mc_process in mc_mapping and event_type in pred_mapping:
+            true_idx = mc_mapping[mc_process]
+            pred_idx = pred_mapping[event_type]
+            confusion_matrix[true_idx, pred_idx] += 1
+        if status == "SIGNAL" and mc_process not in mc_mapping:
+            true_idx = mc_mapping["OTHER"]
+            pred_idx = pred_mapping[event_type]
+            confusion_matrix[true_idx, pred_idx] += 1
+
+        # Only store metrics for the three MC processes we care about (COMP, PAIR, PHOT) not RAYL!
+        if mc_process in ["COMP", "PAIR", "PHOT"]:
+
+            # classification_status is only meaningful for events that actually
+            # reached L2 (i.e. SIGNAL). For MU/UN background events, event_type
+            # is NaN (never classified), so mark classification_status as NaN too
+            # instead of silently comparing against NaN or crashing.
+            classification_map = {"COMP": "CO", "PAIR": "PA", "PHOT": "PH"}
+            if status == "SIGNAL":
+                classification_status = classification_map[mc_process] == event_type
+            else:
+                classification_status = np.nan
+
+            # Get the info (features)
             ia_e = event.GetIAAt(0).GetSecondaryEnergy() / 1000.0  # keV -> MeV
             zpos = event.GetIAAt(1).GetPosition().Z()
             hit_data_tra = pipeline.extract_hit_data(event, detId=1)
@@ -47,72 +58,41 @@ def extract_debug_info(event, status, event_type, pipeline, log_file=None):
             edep_tra = hit_data_tra[0, 3, :].sum().item() / 1000 if hit_data_tra is not None else np.nan
             edep_cal = hit_data_cal[0, 3, :].sum().item() / 1000 if hit_data_cal is not None else np.nan
 
-            feat_dict = {
+            extracted_features = {
+                "mc_process": mc_process,
+                "classification_status": classification_status,
                 "incident_energy": ia_e,
                 "zpos": zpos,
-                "E_tra": edep_tra,
-                "E_cal": edep_cal,
-                "E_tot": edep_tra + edep_cal,
-                "nhits_tra": n_hits_tra,
-                "nhits_cal": n_hits_cal,
-                "nhits_tot": n_hits_tra + n_hits_cal,
             }
-        else:
-            if log_file:
-                log_file.write(
-                    f"ID {event.GetID()}: Unrecognized MC process '{mc_process}' "
-                    f"classified as {status} (L1) - {event_type} (L2)\n"
-                )
-    else:
-        if log_file:
-            log_file.write(
-                f"ID {event.GetID()}: GetNIAs() = {event.GetNIAs()} (not > 1) - cannot resolve MC truth\n"
-            )
 
+        else:
+            # Log events with unrecognized MC process (not COMP, PAIR, PHOT) —
+            # only meaningful/interesting for SIGNAL events; background events
+            # with e.g. RAYL are expected and not worth logging.
+            if status == "SIGNAL" and log_file:
+                log_file.write(f"ID {event.GetID()}: Unrecognized MC process '{mc_process}' classified as {status} (L1) - {event_type} (L2)\n")
+    else:
+        # Log events with unresolvable MC truth (GetNIAs() <= 1)
+        if log_file:
+            log_file.write(f"ID {event.GetID()}: GetNIAs() = {event.GetNIAs()} (not > 1) - cannot resolve MC truth\n")
+
+    # Log SIGNAL events that don't classify as PH, CO, or PA
     if status == "SIGNAL" and event_type not in ["PH", "CO", "PA"]:
         if log_file:
-            log_file.write(
-                f"ID {event.GetID()}: SIGNAL event classified as '{event_type}' (expected PH, CO, or PA)\n"
-            )
+            log_file.write(f"ID {event.GetID()}: SIGNAL event classified as '{event_type}' (expected PH, CO, or PA)\n")
 
-    return mc_process, feat_dict
+    combined_dict = row_dict.copy()
 
+    if mc_process in ["COMP", "PAIR", "PHOT"]:
+        combined_dict.update(extracted_features)
 
-def build_events_dataframe(event_rows, debug):
-    """Build the per-file events DataFrame from a list of row dicts and
-    downcast dtypes so this stays memory-friendly at millions-of-rows scale.
-    """
-    df = pd.DataFrame(event_rows)
+    return mc_process, combined_dict
 
-    # --- categoricals: repeated small-vocabulary strings -> category dtype ---
-    for col in ("l1_state", "l2_label", "mc_process"):
-        if col in df.columns:
-            df[col] = df[col].astype("category")
+# ====================================================================================
+# Main function to process input files, classify events, and generate output and plots
+# ====================================================================================
 
-    # --- downcast numeric columns ---
-    float_cols = ["prob_l1", "prob_l2", "incident_energy", "zpos", "E_tra", "E_cal", "E_tot"]
-    for col in float_cols:
-        if col in df.columns:
-            df[col] = df[col].astype("float32")
-
-    int_cols = ["nhits_tra", "nhits_cal", "nhits_tot"]
-    for col in int_cols:
-        if col in df.columns:
-            # nullable Int32 since these are NaN for events without resolvable features
-            df[col] = df[col].astype("Int32")
-
-    # --- derived column: was the L2 prediction correct, given MC truth? ---
-    if debug and "mc_process" in df.columns:
-        truth_to_pred = {"COMP": "CO", "PAIR": "PA", "PHOT": "PH"}
-        known_truth = df["mc_process"].isin(truth_to_pred.keys())
-        df["correct"] = pd.NA
-        df.loc[known_truth, "correct"] = (
-            df.loc[known_truth, "mc_process"].map(truth_to_pred) == df.loc[known_truth, "l2_label"]
-        )
-
-    return df
-
-def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False):
+def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False):
 
     # Global MEGAlib initialization
     G = M.MGlobal()
@@ -144,8 +124,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         return
 
     # Initiate the pipeline object
-    pipeline = EventClassifierPipeline(model_traced, onlyACDVeto=onlyACDVeto, random_forest_path=rf, lookup_path=lookup_path)
-
+    pipeline = EventClassifierPipeline(model_traced, onlyACDVeto=onlyACDVeto, random_forest_path=rf, lookup_path=lookup_path, three_class=three_class)
     path_out_dir = Path(output_dir)
     path_out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,16 +146,12 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             print(f"Unable to open file {fn_in}. Skipping!")
             continue
 
-        # --------------------------------------------------------------------
-        # event_rows collects ONE dict per event. This single list replaces:
-        #   - prob_l1 / prob_l2        (derive via df.groupby / df['prob_l1'])
-        #   - metrics[...] nested dict (this IS the tidy replacement)
-        #   - confusion_matrix         (derive via pd.crosstab / prepare_confusion_matrix
-        #                               at the end, since it was never read during the run)
-        # It's built once into a DataFrame after the loop — never inside it.
-        # --------------------------------------------------------------------
-        event_rows = []
+        data = []
 
+        confusion_matrix = np.zeros((4, 3), dtype=int)
+        mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2, "OTHER": 3}
+        pred_mapping = {"CO": 0, "PA": 1, "PH": 2}
+        
         # Open log file for debug output
         log_file = None
         if debug:
@@ -196,62 +171,60 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                     M.SetOwnership(Event, True)
                     t_read += time.perf_counter() - t0
-
+                    
                     i += 1
                     id_event = Event.GetID()
-
+                    
                     t0 = time.perf_counter()
 
                     # LAYER 1 — classify signal vs. background
-                    status, prob_bkg = pipeline.signal_background_classifier(
-                        Event, debug=debug, onlyACDVeto=onlyACDVeto, log_file=log_file
-                    )
+                    # status can be "SIGNAL", "MU", or "UN", prob_bkg is the probability of that status.
+                    status, prob_bkg = pipeline.signal_background_classifier(Event, debug=debug, onlyACDVeto=onlyACDVeto, log_file=log_file)
 
+
+                    # Only the SIGNAL events reach L2, so we only call type_of_signal() for those. 
+                    # MU and UN events are never classified further, and their "event_type" is just their L1 status.
                     if status == "SIGNAL":
                         # LAYER 2 — only run for events that passed L1 as signal.
                         event_type, probability = pipeline.type_of_signal(Event, debug=debug, log_file=log_file)
                     else:
-                        # MU/UN events never reach L2, so their "event_type" is just their L1 status.
-                        event_type, probability = status, prob_bkg
-
+                        # MU/UN events never reach L2, so their "event_type" is just nan
+                        event_type, probability = np.nan, np.nan
+                    
+                    # If debug is disabled, this is all the data we have for the event. 
+                    row_dict = {"id": id_event, "l1_output": status, "l1_prob": prob_bkg, "l2_output": event_type, "l2_prob": probability}
+                    
                     t_classify += time.perf_counter() - t0
 
                     t0 = time.perf_counter()
-
-                    row = {
-                        "id_event": id_event,
-                        "l1_state": status,
-                        "prob_l1": prob_bkg,
-                        "l2_label": event_type,
-                        # only meaningful when L1 == SIGNAL; NaN otherwise (matches
-                        # old prob_l2, which was only ever populated for SIGNAL events)
-                        "prob_l2": probability if status == "SIGNAL" else np.nan,
-                    }
-
                     if debug:
-                        mc_process, feat_dict = extract_debug_info(
-                            Event, status, event_type, pipeline=pipeline, log_file=log_file
+                        # Since debug is on we can store MC process and many more features in each row
+                        # Returns the true MC process string (or "UNKNOWN"), which the caller prints to the .etp file.
+                        # Also returns the combined row_dict with additional features for the dataframe.
+                        mc_process, row_dict = record_debug_info(
+                            Event, status, event_type,
+                            row_dict=row_dict,
+                            confusion_matrix=confusion_matrix,
+                            mc_mapping=mc_mapping,
+                            pred_mapping=pred_mapping,
+                            pipeline=pipeline,
+                            log_file=log_file,
                         )
-                        row["mc_process"] = mc_process
-                        if feat_dict is not None:
-                            row.update(feat_dict)
-
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
                             file=f_out,
                         )
                     else:
+                        # Write output like Nathan
                         print(
                             f"SE\nID {id_event}\nET {event_type}\nTP {probability:.4f}",
                             file=f_out,
                         )
-
-                    event_rows.append(row)
-
+                    data.append(row_dict)
                     t_write += time.perf_counter() - t0
                     del Event
                     pbar.update(1)
-
+                        
                     if i % 500 == 0:
                         pbar.set_postfix({
                             "read":     f"{t_read  / i * 1000:.1f}ms",
@@ -259,7 +232,9 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                             "write":    f"{t_write / i * 1000:.1f}ms",
                         })
                         f_out.flush()
-
+    
+            # Create the pandas dataframe
+            df = pd.DataFrame(data)
             print(f"\nDONE. {i} events processed.")
             print(f"  avg read    : {t_read     / i * 1000:.2f} ms/evt")
             print(f"  avg classify: {t_classify / i * 1000:.2f} ms/evt")
@@ -267,177 +242,176 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
             print(f"[OK] File {fn_in.name} completed successfully. Saved to {fn_out}")
 
             if debug:
+                # Close the log file
                 log_file.write(f"\nEnd of problems, total events processed: {i}\n")
                 log_file.close()
 
-            # ================================================
-            # Build this file's DataFrame — ONE per input file
-            # ================================================
-            print("[INFO] Building DataFrame...")
-            df = build_events_dataframe(event_rows, debug=debug)
-            df_path = clean_out_dir / f"{base_name}_events.parquet"
-            df.to_parquet(df_path, index=False)
-            print(f"[OK] Events DataFrame ({len(df)} rows, {df.memory_usage(deep=True).sum() / 1e6:.1f} MB) saved to: {df_path}")
+            plot_results(df, confusion_matrix, base_name, clean_out_dir, debug=debug)
 
-            # ================
-            # Plotting section
-            # ================
-            print("[INFO] Plots...")
+def plot_results(df, confusion_matrix, base_name, clean_out_dir, debug=False):
+    print("[INFO] Plots...")
 
-            # --- L1 ---
-            make_category_counts_plot(
-                df, "l1_state", ['MU', 'SIGNAL', 'UN'],
-                ['orange', 'crimson', 'teal'],
-                'L1: Signal vs Background Counts',
-                clean_out_dir / f"{base_name}_L1_counts.png",
-            )
+    # L1 categories plot
+    l1_cat_path = clean_out_dir / f"{base_name}_L1_counts.png"
+    plot_bar_counts(
+        df, "l1_output", ['orange', 'crimson', 'teal'],
+        'L1: Signal vs Background Counts',
+        l1_cat_path,
+    )
+    print(f"[OK] L1 categories plot saved to: {l1_cat_path}")
 
-            make_probabilities_plot(
-                df, "l1_state", "prob_l1",
-                [
-                    ('MU', 'MU', 'crimson', 'darkred'),
-                    ('SIGNAL', 'SIGNAL', 'teal', 'darkslategray'),
-                    ('UN', 'UN', 'gray', 'dimgray'),
-                ],
-                'L1: Probability Distribution (TP)',
-                clean_out_dir / f"{base_name}_L1_probabilities.png",
-            )
+    # L1 probabilities plot
+    l1_prob_path = clean_out_dir / f"{base_name}_L1_probabilities.png"
+    plot_overlaid_probabilities(
+        df, 'l1_prob', 'l1_output', 'L1: Probability Distribution (TP)',
+        l1_prob_path,
+    )
+    print(f"[OK] L1 probabilities plot saved to: {l1_prob_path}")
 
-            # --- L2 ---
-            make_category_counts_plot(
-                df, "l2_label", ['CO', 'PA', 'PH', 'UN'],
-                ['royalblue', 'forestgreen', 'darkorchid', 'gray'],
-                'L2: Photon Type Classification Counts',
-                clean_out_dir / f"{base_name}_L2_counts.png",
-            )
+    # L2 categories plot
+    l2_cat_path = clean_out_dir / f"{base_name}_L2_counts.png"
+    plot_bar_counts(
+        df, "l2_output", ['royalblue', 'forestgreen', 'darkorchid', 'gray'],
+        'L2: Photon Type Classification Counts',
+        l2_cat_path,
+    )
+    print(f"[OK] L2 categories plot saved to: {l2_cat_path}")
 
-            make_probabilities_plot(
-                df, "l2_label", "prob_l2",
-                [
-                    ('CO', 'CO (Compton)', 'royalblue', 'darkblue'),
-                    ('PA', 'PA (Pair)', 'forestgreen', 'darkgreen'),
-                    ('PH', 'PH (Photo)', 'darkorchid', 'purple'),
-                    ('UN', 'UN', 'gray', 'dimgray'),
-                ],
-                'L2: Probability Distribution (TP)',
-                clean_out_dir / f"{base_name}_L2_probabilities.png",
-            )
+    # L2 probabilities plot
+    l2_prob_path = clean_out_dir / f"{base_name}_L2_probabilities.png"
+    plot_overlaid_probabilities(
+        df, 'l2_prob', 'l2_output', 'L2: Probability Distribution (TP)',
+        l2_prob_path,
+    )
+    print(f"[OK] L2 probabilities plot saved to: {l2_prob_path}")
 
-            if debug:
-                mc_processes = ["COMP", "PAIR", "PHOT"]
-                states1 = ["UN", "MU", "SIGNAL"]
+    if debug:
+        # Energy spectrum plot: 1x3 stacked histogram (stacked by L1 status), 
+        # one subplot per MC process (COMP, PAIR, PHOT).
+        spectrum_path = clean_out_dir / f"{base_name}_energy_spectrum_stacked.png"
+        plot_stacked_energy_spectrum(df, spectrum_path)
+        print(f"[OK] Stacked energy spectrum saved to: {spectrum_path}")
 
-                # --- Energy spectrum: stacked by L1 status, one subplot per MC process ---
-                make_energy_spectrum_plot(
-                    df, mc_processes, states1,
-                    clean_out_dir / f"{base_name}_energy_spectrum_stacked.png",
-                )
-                print(f"[OK] Stacked energy spectrum saved to: {clean_out_dir / f'{base_name}_energy_spectrum_stacked.png'}")
+        # Confusion matrix
+        matrix_path = clean_out_dir / f"{base_name}_confusion_matrix.png"
+        plot_confusion_matrix(confusion_matrix, matrix_path)
+        print(f"[OK] Confusion Matrix : {matrix_path}")    
+        
+        # Confusion plot for incident energy
+        plot_path = clean_out_dir / f"{base_name}_incident_energy_confusion_plot.png"
+        plot_particle_comparison_plot(df, feature_col="incident_energy", binning_strategy="arange", output_path=plot_path)
+        print(f"[OK] Incident Energy Comparison Plot saved to: {plot_path}")
 
-                # --- Confusion matrix: derived + plotted, not accumulated during the run ---
-                matrix_path = clean_out_dir / f"{base_name}_confusion_matrix.png"
-                make_confusion_matrix_plot(df, matrix_path)
-                print(f"[OK] Confusion Matrix : {matrix_path}")
-
-                # --- 4-panel mis/classification plots ---
-
-                # TYPE 1: Metrics split by Particle Type (CO, PA, PH)
-                make_particle_comparison_plot(
-                    df, "incident_energy", "Incident Energy (MeV)",
-                    "Incident Energy Distribution by Category (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_category_energy.png",
-                    bin_rule=np.arange(0, 51, 1), log_y=True,
-                )
-                print(f"[OK] Incident Energy Distribution by Category (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_category_energy.png'}")
-
-                make_particle_comparison_plot(
-                    df, "zpos", "Incidence Z Position (cm)",
-                    "Z Vertex Distribution by Category (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_category_zpos.png",
-                    bin_rule=np.linspace(-15, 30, 51), log_y=False,
-                )
-                print(f"[OK] Z Vertex Distribution by Category (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_category_zpos.png'}")
-
-                make_particle_comparison_plot(
-                    df, "erat", "Energy Ratio (E_tra / E_cal)",
-                    "Deposited Energy Ratio (TRA / CAL) by Category (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_category_erat.png",
-                    bin_rule="linspace", log_y=False,
-                    calc=lambda d: (d["E_tra"] / d["E_cal"]).where(d["E_cal"] > 0),
-                )
-                print(f"[OK] Deposited Energy Ratio (TRA / CAL) by Category (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_category_erat.png'}")
-
-                make_particle_comparison_plot(
-                    df, "nrat", "Number of Hits Ratio (n_tra / n_cal)",
-                    "Number of Hits Ratio (TRA / CAL) by Category (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_category_nrat.png",
-                    bin_rule="linspace", log_y=False,
-                    calc=lambda d: (d["nhits_tra"] / d["nhits_cal"]).where(d["nhits_cal"] > 0),
-                )
-                print(f"[OK] Number of Hits Ratio (TRA / CAL) by Category (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_category_nrat.png'}")
-
-                # TYPE 2: Metrics split by Detector Component (TRA, CAL, TOT)
-                make_detector_comparison_plot(
-                    df, {"TRA": "E_tra", "CAL": "E_cal", "TOT": "E_tot"},
-                    "Deposited energy (MeV)",
-                    "Deposited Energy Distribution by Detector (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_detector_edep.png",
-                    bin_rule="linspace",
-                )
-                print(f"[OK] Deposited Energy Distribution by Detector (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_detector_edep.png'}")
-
-                make_detector_comparison_plot(
-                    df, {"TRA": "nhits_tra", "CAL": "nhits_cal", "TOT": "nhits_tot"},
-                    "Number of hits",
-                    "Distribution of Number of Hits by Detector (Layer 2)",
-                    clean_out_dir / f"{base_name}_wrong_predictions_by_detector_nhits.png",
-                    bin_rule="arange",
-                )
-                print(f"[OK] Distribution of Number of Hits by Detector (Layer 2) saved to: "
-                      f"{clean_out_dir / f'{base_name}_wrong_predictions_by_detector_nhits.png'}")
+        # Confusion plot for zpos 
+        plot_path = clean_out_dir / f"{base_name}_zpos_confusion_plot.png"
+        plot_particle_comparison_plot(df, feature_col="zpos", binning_strategy="linspace", log_y=False, output_path=plot_path)
+        print(f"[OK] Z Position Comparison Plot saved to: {plot_path}")
 
 # =========================
 # Main function and parsing
 # =========================
 if __name__ == "__main__":
-
+    
     parser = argparse.ArgumentParser(
         description="Event Classifier Pipeline for MEGAlib simulation files."
     )
+    parser.add_argument(
+        "-i", "--input", 
+        type=str, 
+        default="./mini_test.sim.gz",
+        help="Path to a single .sim/.sim.gz file OR to a directory containing them."
+    )
+    parser.add_argument(
+        "-o", "--output-dir", 
+        type=str, 
+        default="./output_etp",
+        help="Directory where output .etp files will be saved."
+    )
+    parser.add_argument(
+        "-g", "--geometry", 
+        type=str, 
+        default="../../simuComPair/Geometry/ComPair_23/ComPair23.geo.setup",
+        help="Path to the MEGAlib geometry setup file (.geo.setup)."
+    )
+    parser.add_argument(
+        "-m", "--model", 
+        type=str, 
+        default=None,
+        help="Path to the PointNet model weights file (.pt). If omitted, defaults to "
+             "the 2-class or 3-class checkpoint depending on whether -3c/--three-class is set."
+    )
+    parser.add_argument(
+        "--disable-onlyacd", 
+        action="store_false", 
+        dest="only_acd_veto",
+        help="Disable the strict ACD-only veto and enable the Random Forest/PCA layer "
+             "(implied automatically if -rf or -pca is provided)."
+    )
+    parser.add_argument(
+        "-rf", "--random-forest", 
+        type=str, 
+        default=None,
+        help="Path to the Random Forest model file (.skops). Providing this flag "
+             "automatically disables the ACD-only veto."
+    )
+    parser.add_argument(
+        "-pca", "--pca", 
+        type=str, 
+        default=None, #"./pca_files",
+        help="Path to the lookup-table pca file. Providing this flag automatically "
+             "disables the ACD-only veto."
+    )
+    parser.add_argument(
+        "--debug", 
+        action="store_true", 
+        help="Enable debug mode to print MC true processes into the output file."
+    )
+    parser.add_argument(
+        "-3c", "--three-class",
+        action="store_true",
+        dest="three_class",
+        help="Use the 3-class PointNet model (PointNetModels/pointnet3C.py) instead "
+             "of the default 2-class model (PointNetModels/pointnet2C.py)."
+    )
 
-    parser.add_argument("-i", "--input", type=str,
-                         default="./ComPair23_1MeV_50MeV_powerlaw.p1.inc10.id1.sim.gz",
-                         help="Path to a single .sim/.sim.gz file OR to a directory containing them.")
-    parser.add_argument("-o", "--output-dir", type=str, default="./output_etp",
-                         help="Directory where output .etp files will be saved.")
-    parser.add_argument("-g", "--geometry", type=str,
-                         default="../../simuComPair/Geometry/ComPair_23/ComPair23.geo.setup",
-                         help="Path to the MEGAlib geometry setup file (.geo.setup).")
-    parser.add_argument("-m", "--model", type=str,
-                         default="./PointNetModels/test_torch_model_params_final_26-06.pth",
-                         help="Path to the PointNet model weights file (.pt).")
-    parser.add_argument("--disable-onlyacd", action="store_false", dest="only_acd_veto",
-                         help="Disable the strict ACD-only veto and enable the Random Forest/PCA layer.")
-    parser.add_argument("-rf", "--random-forest", type=str, default=None,
-                         help="Path to the Random Forest model pickle file (used only if ACD-only veto is disabled).")
-    parser.add_argument("-pca", "--pca", type=str, default=None, help="LookupTable pca.")
-    parser.add_argument("--debug", action="store_true",
-                         help="Enable debug mode to print MC true processes into the output file.")
-
+    # Parse the arguments from command line
     args = parser.parse_args()
 
+    DEFAULT_RF_PATH = "./RandomForest/vega_model.skops"
+    DEFAULT_MODEL_PATH_2C = "./PointNetModels/test_torch_model_params_final_26-06.pth"
+    DEFAULT_MODEL_PATH_3C = "./PointNetModels/test_torch_model_params_3c_nhits.pth"
+
+    if args.random_forest is not None and args.pca is not None:
+        parser.error(
+            "--random-forest/-rf and --pca/-pca are mutually exclusive: "
+            "choose only one background classifier."
+        )
+
+    # Explicitly asking for -rf or -pca implies you want the veto disabled:
+    # no need to also pass --disable-onlyacd.
+    if args.random_forest is not None or args.pca is not None:
+        args.only_acd_veto = False
+
+    # If the veto is disabled (via --disable-onlyacd alone) but neither -rf nor
+    # -pca was given, fall back to the default Random Forest model path.
+    rf_path = args.random_forest
+    if not args.only_acd_veto and rf_path is None and args.pca is None:
+        rf_path = DEFAULT_RF_PATH
+
+    # If -m/--model wasn't given, pick the default checkpoint matching -3c/--three-class.
+    model_path = args.model
+    if model_path is None:
+        model_path = DEFAULT_MODEL_PATH_3C if args.three_class else DEFAULT_MODEL_PATH_2C
+
+    # Pass the parsed arguments directly to the main function
     main(
-        input_path=args.input,
-        output_dir=args.output_dir,
-        geometry_name=args.geometry,
-        model_traced=args.model,
-        onlyACDVeto=args.only_acd_veto,
-        rf=None if args.pca is not None else args.random_forest,
+        input_path=args.input, 
+        output_dir=args.output_dir, 
+        geometry_name=args.geometry, 
+        model_traced=model_path, 
+        onlyACDVeto=args.only_acd_veto, 
+        rf=None if args.pca is not None else rf_path,
         lookup_path=args.pca,
-        debug=args.debug
+        debug=args.debug,
+        three_class=args.three_class
     )

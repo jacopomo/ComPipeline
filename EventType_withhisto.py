@@ -358,13 +358,16 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                 # Helper function to generate dynamic bins across all plot types safely
                 def get_dynamic_bins(data_list, bin_rule, fallback=50):
+                    if not fallback:
+                        fallback = 50
+
                     if not isinstance(bin_rule, str):
                             return bin_rule
                     if not data_list:
                         return fallback
                     
                     if bin_rule == "linspace":
-                        return np.linspace(min(data_list), max(data_list), 51)
+                        return np.linspace(min(data_list), max(data_list), fallback+1)
                     if bin_rule == "arange":
                         return np.arange(0, int(max(data_list)) + 1, 1)
                     return fallback # Default fallback if an explicit bin array was provided
@@ -379,12 +382,22 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 # =================================================================
                 # TYPE 1: Metrics split by Particle Type (CO, PA, PH)
                 # =================================================================
+                # --- Compute shared bins for the three E_dep_* plots up front ---
+                shared_edep_feats = ["E_tra", "E_cal", "E_tot"]
+                shared_edep_flat = []
+                for feat in shared_edep_feats:
+                    for proc, l2, leaf in signal_leaves:
+                        shared_edep_flat.extend(leaf[feat])
+
+                shared_edep_bins = get_dynamic_bins(shared_edep_flat, "linspace", fallback=50)
+
                 particle_plots = [
                     {
                         "feat": "incident_energy",
                         "xlabel": "Incident Energy (MeV)",
                         "title": "Incident Energy Distribution by Category (Layer 2)",
                         "bin_rule": np.arange(0, 51, 1),
+                        "bin_number": None,
                         "log_y": True,
                         "suffix": "energy",
                         "calc": None
@@ -394,15 +407,47 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         "xlabel": "Incidence Z Position (cm)",
                         "title": "Z Vertex Distribution by Category (Layer 2)",
                         "bin_rule": np.linspace(-15, 30, 51),
+                        "bin_number": None,
                         "log_y": False,
                         "suffix": "zpos",
                         "calc": None
-                    }, 
+                    },
+                    {
+                        "feat": "E_tra", 
+                        "xlabel": "Deposited energy (MeV)",
+                        "title": "Deposited Energy Distribution in the Tracker by Category (Layer 2)",
+                        "bin_rule": shared_edep_bins,
+                        "bin_number": None,
+                        "log_y": True,
+                        "suffix": "E_dep_tra",
+                        "calc": None
+                    },
+                    {
+                        "feat": "E_cal", 
+                        "xlabel": "Deposited energy (MeV)",
+                        "title": "Deposited Energy Distribution in the Calorimeter by Category (Layer 2)",
+                        "bin_rule": shared_edep_bins,
+                        "bin_number": None,
+                        "log_y": True,
+                        "suffix": "E_dep_cal",
+                        "calc": None
+                    },
+                    {
+                        "feat": "E_tot", 
+                        "xlabel": "Deposited energy (MeV)",
+                        "title": "Total Deposited Energy Distribution by Category (Layer 2)",
+                        "bin_rule": shared_edep_bins,
+                        "bin_number": None,
+                        "log_y": True,
+                        "suffix": "E_dep_tot",
+                        "calc": None
+                    },
                     {
                         "feat": "erat", 
                         "xlabel": "Energy Ratio (E_tra / E_cal)",
                         "title": "Deposited Energy Ratio (TRA / CAL) by Category (Layer 2)",
-                        "bin_rule": "linspace", # Now dynamic based on data limits!
+                        "bin_rule": "linspace", # Ratios are continuous floats, so linspace fits best
+                        "bin_number": 200,
                         "log_y": False,
                         "suffix": "erat",
                         "calc": lambda b: np.divide(np.array(b["E_tra"]), np.array(b["E_cal"]), 
@@ -414,6 +459,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         "xlabel": "Number of Hits Ratio (n_tra / n_cal)",
                         "title": "Number of Hits Ratio (TRA / CAL) by Category (Layer 2)",
                         "bin_rule": "linspace", # Ratios are continuous floats, so linspace fits best
+                        "bin_number": 200,
                         "log_y": False,
                         "suffix": "nrat",
                         "calc": lambda b: np.divide(np.array(b["nhits_tra"]), np.array(b["nhits_cal"]), 
@@ -429,7 +475,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                     for proc, l2, leaf in signal_leaves:
                         lbl = process_map[proc]
-
                         if p["calc"] is not None:
                             vals = p["calc"](leaf)
                             vals = vals[~np.isnan(vals)].tolist()
@@ -445,7 +490,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     # Unify dynamic flattening across all channels for evaluation
                     flat_data = sum(true_dict.values(), []) + sum(miss_dict.values(), [])
-                    plot_bins = get_dynamic_bins(flat_data, p["bin_rule"])
+                    plot_bins = get_dynamic_bins(flat_data, p["bin_rule"], fallback=p["bin_number"])
                    
                     plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_category_{p['suffix']}.png"
                     plot_type_classification_comparison(
@@ -462,14 +507,16 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         "xlabel": "Deposited energy (MeV)",
                         "title": "Deposited Energy Distribution by Detector (Layer 2)",
                         "suffix": "edep",
-                        "bin_rule": "linspace"
+                        "bin_rule": "linspace",
+                        "bin_number": None,
                     },
                     {
                         "feats": {"TRA": "nhits_tra", "CAL": "nhits_cal", "TOT": "nhits_tot"},
                         "xlabel": "Number of hits",
                         "title": "Distribution of Number of Hits by Detector (Layer 2)",
                         "suffix": "nhits",
-                        "bin_rule": "arange" # Hits are whole integers, so arange fits perfectly
+                        "bin_rule": "arange", # Hits are whole integers, so arange fits perfectly
+                        "bin_number": None,
                     }
                 ]
 
@@ -491,7 +538,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     # Compute flat dataset to automatically extract boundaries
                     flat_data = true_dict["TRA"] + true_dict["CAL"] + true_dict["TOT"] + miss_dict["TRA"] + miss_dict["CAL"] + miss_dict["TOT"]
-                    plot_bins = get_dynamic_bins(flat_data, d["bin_rule"])
+                    plot_bins = get_dynamic_bins(flat_data, d["bin_rule"], fallback=d["bin_number"])
                         
                     plot_path = clean_out_dir / f"{base_name}_wrong_predictions_by_detector_{d['suffix']}.png"
                     plot_type_classification_comparison(
@@ -572,8 +619,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     DEFAULT_RF_PATH = "./RandomForest/vega_model.skops"
-    DEFAULT_MODEL_PATH_2C = "./PointNetModels/test_torch_model_params_final_26-06.pth"
-    DEFAULT_MODEL_PATH_3C = "./PointNetModels/test_torch_model_params_3c_nhits.pth"
+    DEFAULT_MODEL_PATH_2C = "./PointNetModels/test_torch_model_params_2c_nhits2.pth"
+    DEFAULT_MODEL_PATH_3C = "./PointNetModels/test_torch_model_params_3c_nhits2.pth"
 
     if args.random_forest is not None and args.pca is not None:
         parser.error(

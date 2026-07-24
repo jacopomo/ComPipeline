@@ -24,7 +24,7 @@ GEOMETRY = "../Geometry/ComPair_23/ComPair23.geo.setup"
 MODEL = "./PointNetModels/test_torch_model_params_train_2C_nhits2.pth"
 
 INPUT_TEMPLATE = "simgz/grant_single_energies/ComPair2_{energy}keV.inc1.id1.sim.gz"
-OUTPUT_TEMPLATE = "output_etp/grant_single_energies/nhits1/{energy}keV/"
+OUTPUT_TEMPLATE = "output_etp/grant_single_energies/nhits2/{energy}keV/"
 
 EXTRA_FLAGS = ["--debug"]
 

@@ -130,7 +130,7 @@ class EventClassifierPipeline:
             return "UN", 1.00
 
         # 1.Cut for  Photoelectric effect (PHOT), less than 2 hits is likely a photoelectric effect. Return 'PH' with probability 0.50 (uncertain).
-        if not nhits > 1:
+        if not nhits > 2:
             return "PH", 0.50  # 'PH' for Photoelectric
 
         # 2. If not Photoelectric, extract hit data and execute PointNet

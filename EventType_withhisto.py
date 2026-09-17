@@ -5,7 +5,7 @@ import numpy as np
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix
+from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist
 from EventClassifierPipeline import EventClassifierPipeline
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
@@ -193,6 +193,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         # These will store the probabilities for each event, indexed by their respective states.
         prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
+        signal_reconstructed_energy = []
+        signal_incident_energy = []
 
         confusion_matrix = np.zeros((4, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2, "OTHER": 3}
@@ -235,6 +237,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     # Only the SIGNAL events reach L2, so we only call type_of_signal() for those. 
                     # MU and UN events are never classified further, and their "event_type" is just their L1 status.
                     if status == "SIGNAL":
+                        signal_reconstructed_energy.append(Event.GetTotalEnergyDeposit() / 1000.0)
+                        signal_incident_energy.append(Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0)
                         # LAYER 2 — only run for events that passed L1 as signal.
                         event_type, probability = pipeline.type_of_signal(Event, debug=debug, log_file=log_file)
                         # prob_l2 gets populated HERE, only for L1 status == "SIGNAL".
@@ -338,6 +342,14 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 prob_l2, l2_hist_configs, 'L2: Probability Distribution (TP)',
                 clean_out_dir / f"{base_name}_L2_probabilities.png",
             )
+
+            energy_response_path = clean_out_dir / f"{base_name}_energy_response.png"
+            plot_energy_response_hist(
+                signal_reconstructed_energy,
+                signal_incident_energy,
+                energy_response_path,
+            )
+            print(f"[OK] Energy response saved to: {energy_response_path}")
 
             # Energy spectrum plot: 1x3 stacked histogram (stacked by L1 status),
             # one subplot per MC process (COMP, PAIR, PHOT).

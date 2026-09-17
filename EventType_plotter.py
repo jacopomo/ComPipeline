@@ -222,3 +222,33 @@ def plot_confusion_matrix(confusion_matrix, output_path):
     matrix_path = output_path
     plt.savefig(matrix_path, dpi=300)
     plt.close()
+
+def plot_energy_response_hist(reconstructed_energy, incident_energy, output_path, bins=50):
+    """Plot reconstructed energy against Monte Carlo incident energy.
+
+    Both energy sequences are expected in MeV and must contain one entry per
+    selected SIGNAL event.
+    """
+    reconstructed_energy = np.asarray(reconstructed_energy, dtype=float)
+    incident_energy = np.asarray(incident_energy, dtype=float)
+    valid = np.isfinite(reconstructed_energy) & np.isfinite(incident_energy)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    if np.any(valid):
+        histogram = ax.hist2d(
+            reconstructed_energy[valid],
+            incident_energy[valid],
+            bins=bins,
+            cmap="viridis",
+            cmin=1,
+        )
+        fig.colorbar(histogram[3], ax=ax, label="Number of Events")
+    else:
+        ax.text(0.5, 0.5, "No SIGNAL events", ha="center", va="center", transform=ax.transAxes)
+    ax.set_xlabel("Reconstructed Energy (MeV)", fontsize=10)
+    ax.set_ylabel("Monte Carlo Incident Energy (MeV)", fontsize=10)
+    ax.set_title("Energy Response for SIGNAL Events", fontsize=12, fontweight="bold")
+    ax.grid(True, linestyle="--", alpha=0.35)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)

@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt 
+from matplotlib.colors import LogNorm
 import numpy as np
 
 def plot_type_classification_comparison(true_by_category, miss_by_category, all_by_category, output_path, xlabel, title, bins=50, log_y=True, categories=None):
@@ -223,32 +224,166 @@ def plot_confusion_matrix(confusion_matrix, output_path):
     plt.savefig(matrix_path, dpi=300)
     plt.close()
 
-def plot_energy_response_hist(reconstructed_energy, incident_energy, output_path, bins=50):
-    """Plot reconstructed energy against Monte Carlo incident energy.
+def plot_energy_response_hist(measured_energy, incident_energy, output_path, bins=50):
+    """Plot measured energy against Monte Carlo incident energy.
 
     Both energy sequences are expected in MeV and must contain one entry per
     selected SIGNAL event.
     """
-    reconstructed_energy = np.asarray(reconstructed_energy, dtype=float)
+    measured_energy = np.asarray(measured_energy, dtype=float)
     incident_energy = np.asarray(incident_energy, dtype=float)
-    valid = np.isfinite(reconstructed_energy) & np.isfinite(incident_energy)
+    valid = np.isfinite(measured_energy) & np.isfinite(incident_energy)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig = plt.figure(figsize=(9, 8))
+    grid = fig.add_gridspec(
+        2,
+        3,
+        width_ratios=(1, 4, 0.18),
+        height_ratios=(4, 1),
+        wspace=0.08,
+        hspace=0.08,
+    )
+    ax = fig.add_subplot(grid[0, 1])
+    ax_incident = fig.add_subplot(grid[0, 0], sharey=ax)
+    ax_measured = fig.add_subplot(grid[1, 1], sharex=ax)
+    cax = fig.add_subplot(grid[0, 2])
+
     if np.any(valid):
         histogram = ax.hist2d(
-            reconstructed_energy[valid],
+            measured_energy[valid],
             incident_energy[valid],
             bins=bins,
             cmap="viridis",
             cmin=1,
+            norm=LogNorm(vmin=1),
         )
-        fig.colorbar(histogram[3], ax=ax, label="Number of Events")
+        fig.colorbar(histogram[3], cax=cax, label="Number of Events")
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        diagonal_min = max(x_min, y_min)
+        diagonal_max = min(x_max, y_max)
+        ax.plot(
+            [diagonal_min, diagonal_max],
+            [diagonal_min, diagonal_max],
+            linestyle="--",
+            color="white",
+            linewidth=1.2,
+            label="Perfect response",
+        )
+        x_edges, y_edges = histogram[1], histogram[2]
+        ax_measured.hist(
+            measured_energy[valid],
+            bins=x_edges,
+            color="steelblue",
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        ax_measured.set_yscale("log")
+        ax_incident.hist(
+            incident_energy[valid],
+            bins=y_edges,
+            orientation="horizontal",
+            color="darkorange",
+            edgecolor="black",
+            linewidth=0.4,
+        )
+        ax_incident.set_xscale("log")
     else:
         ax.text(0.5, 0.5, "No SIGNAL events", ha="center", va="center", transform=ax.transAxes)
-    ax.set_xlabel("Reconstructed Energy (MeV)", fontsize=10)
+
+    ax.set_xlabel("Deposited Energy (MeV)", fontsize=10)
     ax.set_ylabel("Monte Carlo Incident Energy (MeV)", fontsize=10)
     ax.set_title("Energy Response for SIGNAL Events", fontsize=12, fontweight="bold")
     ax.grid(True, linestyle="--", alpha=0.35)
+    ax_measured.set_xlabel("Deposited Energy (MeV)", fontsize=10)
+    ax_measured.set_ylabel("Events", fontsize=10)
+    ax_measured.grid(True, axis="y", linestyle="--", alpha=0.35)
+    ax_incident.set_xlabel("Events", fontsize=10)
+    ax_incident.set_ylabel("Monte Carlo Incident Energy (MeV)", fontsize=10)
+    ax_incident.grid(True, axis="x", linestyle="--", alpha=0.35)
+
+    plt.setp(ax.get_xticklabels(), visible=False)
+    plt.setp(ax_incident.get_yticklabels(), visible=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+def plot_process_probability_vs_measured_energy(
+    measured_energy_by_process,
+    all_measured_energy,
+    output_path,
+    incident_energy_by_process=None,
+    all_incident_energy=None,
+    bins=50,
+):
+    """Plot true-process probabilities as a function of measured and MC energy.
+
+    Each probability is estimated per energy bin as the number of events from
+    that process divided by the number of all events in the bin. Solid curves
+    use measured deposited energy; optional dotted curves use true MC initial
+    energy.
+    Consequently, events from processes not present in
+    ``measured_energy_by_process`` (for example RAYL) make the three curves
+    sum to less than one.
+    """
+    all_measured_energy = np.asarray(all_measured_energy, dtype=float)
+    all_measured_energy = all_measured_energy[np.isfinite(all_measured_energy)]
+    incident_energy_by_process = incident_energy_by_process or {}
+    all_incident_energy = np.asarray(all_incident_energy if all_incident_energy is not None else [], dtype=float)
+    all_incident_energy = all_incident_energy[np.isfinite(all_incident_energy)]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    if all_measured_energy.size == 0:
+        ax.text(0.5, 0.5, "No measured-energy events", ha="center", va="center", transform=ax.transAxes)
+    else:
+        all_energy = np.concatenate((all_measured_energy, all_incident_energy))
+        _, bin_edges = np.histogram(all_energy, bins=bins)
+        centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        colors = {"COMP": "royalblue", "PAIR": "forestgreen", "PHOT": "darkorchid"}
+
+        for process, color in colors.items():
+            process_energy = np.asarray(measured_energy_by_process.get(process, []), dtype=float)
+            process_energy = process_energy[np.isfinite(process_energy)]
+            counts_total_measured, _ = np.histogram(all_measured_energy, bins=bin_edges)
+            counts_process_measured, _ = np.histogram(process_energy, bins=bin_edges)
+            measured_probabilities = np.divide(
+                counts_process_measured,
+                counts_total_measured,
+                out=np.zeros_like(counts_process_measured, dtype=float),
+                where=counts_total_measured > 0,
+            )
+            ax.plot(centers, measured_probabilities, marker=".", linewidth=1.5, label=f"{process} (measured)", color=color)
+
+            if all_incident_energy.size > 0:
+                process_incident_energy = np.asarray(incident_energy_by_process.get(process, []), dtype=float)
+                process_incident_energy = process_incident_energy[np.isfinite(process_incident_energy)]
+                counts_total_incident, _ = np.histogram(all_incident_energy, bins=bin_edges)
+                counts_process_incident, _ = np.histogram(process_incident_energy, bins=bin_edges)
+                incident_probabilities = np.divide(
+                    counts_process_incident,
+                    counts_total_incident,
+                    out=np.zeros_like(counts_process_incident, dtype=float),
+                    where=counts_total_incident > 0,
+                )
+                ax.plot(
+                    centers,
+                    incident_probabilities,
+                    marker=".",
+                    linestyle=":",
+                    linewidth=1.5,
+                    alpha=0.8,
+                    label=f"{process} (true MC)",
+                    color=color,
+                )
+
+        ax.set_xlim(bin_edges[0], bin_edges[-1])
+        ax.set_ylim(0, 1.05)
+
+    ax.set_xlabel("Measured Deposited Energy (MeV)", fontsize=10)
+    ax.set_ylabel("Frequentist Process Probability", fontsize=10)
+    ax.set_title("True MC Process Probability vs Measured Energy", fontsize=12, fontweight="bold")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)

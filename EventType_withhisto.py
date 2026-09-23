@@ -5,7 +5,7 @@ import numpy as np
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist
+from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
 from EventClassifierPipeline import EventClassifierPipeline
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
@@ -195,6 +195,10 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
         signal_reconstructed_energy = []
         signal_incident_energy = []
+        measured_energy_by_process = {proc: [] for proc in mc_processes}
+        all_measured_energy = []
+        incident_energy_by_process = {proc: [] for proc in mc_processes}
+        all_incident_energy = []
 
         confusion_matrix = np.zeros((4, 3), dtype=int)
         mc_mapping = {"COMP": 0, "PAIR": 1, "PHOT": 2, "OTHER": 3}
@@ -222,6 +226,11 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     
                     i += 1
                     id_event = Event.GetID()
+
+                    if debug:
+                        all_measured_energy.append(Event.GetTotalEnergyDeposit() / 1000.0)
+                        if Event.GetNIAs() > 0:
+                            all_incident_energy.append(Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0)
                     
                     t0 = time.perf_counter()
 
@@ -264,6 +273,14 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                             pipeline=pipeline,
                             log_file=log_file,
                         )
+                        if mc_process in measured_energy_by_process:
+                            measured_energy_by_process[mc_process].append(
+                                Event.GetTotalEnergyDeposit() / 1000.0
+                            )
+                            if Event.GetNIAs() > 0:
+                                incident_energy_by_process[mc_process].append(
+                                    Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0
+                                )
                         print(
                             f"SE\nID {id_event}\nMC {mc_process}\nET {event_type}\nTP {probability:.4f}",
                             file=f_out,
@@ -350,6 +367,17 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 energy_response_path,
             )
             print(f"[OK] Energy response saved to: {energy_response_path}")
+
+            if debug:
+                probability_path = clean_out_dir / f"{base_name}_process_probability_vs_measured_energy.png"
+                plot_process_probability_vs_measured_energy(
+                    measured_energy_by_process,
+                    all_measured_energy,
+                    probability_path,
+                    incident_energy_by_process=incident_energy_by_process,
+                    all_incident_energy=all_incident_energy,
+                )
+                print(f"[OK] Process probability plot saved to: {probability_path}")
 
             # Energy spectrum plot: 1x3 stacked histogram (stacked by L1 status),
             # one subplot per MC process (COMP, PAIR, PHOT).

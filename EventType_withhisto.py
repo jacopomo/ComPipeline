@@ -1,11 +1,12 @@
 import argparse
+import csv
 from tqdm import tqdm
 import time
 import numpy as np
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
+from EventType_plotter import estimate_compton_pair_probability, plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
 from EventClassifierPipeline import EventClassifierPipeline
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
@@ -93,7 +94,7 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
 # Main function to process input files, classify events, and generate output and plots
 # ====================================================================================
 
-def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False):
+def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False, probability_csv=None, energy_bin=None, probability_only=False):
 
     # Global MEGAlib initialization
     G = M.MGlobal()
@@ -193,6 +194,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         # These will store the probabilities for each event, indexed by their respective states.
         prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
+        classification_counts = {state: 0 for state in states2}
         signal_reconstructed_energy = []
         signal_incident_energy = []
         measured_energy_by_process = {proc: [] for proc in mc_processes}
@@ -257,6 +259,9 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         # MU/UN events never reach L2, so their "event_type" is just their L1 status.
                         # However, prob_l2 never gets populated with these events. 
                         event_type, probability = status, prob_bkg
+
+                    if event_type in classification_counts:
+                        classification_counts[event_type] += 1
                     
                     t_classify += time.perf_counter() - t0
 
@@ -313,6 +318,37 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 # Close the log file
                 log_file.write(f"\nEnd of problems, total events processed: {i}\n")
                 log_file.close()
+
+            if probability_csv is not None:
+                probability = estimate_compton_pair_probability(
+                    classification_counts["CO"],
+                    classification_counts["PA"],
+                )
+                csv_path = Path(probability_csv)
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+                with csv_path.open("a", newline="") as csv_file:
+                    writer = csv.DictWriter(csv_file, fieldnames=[
+                        "energy_bin",
+                        "compton_probability",
+                        "compton_error",
+                        "pair_probability",
+                        "pair_error",
+                        "compton_count",
+                        "pair_count",
+                        "total_count",
+                    ])
+                    if write_header:
+                        writer.writeheader()
+                    writer.writerow({"energy_bin": energy_bin, **probability})
+                print(
+                    f"[OK] CO={probability['compton_probability']:.6g}, "
+                    f"PA={probability['pair_probability']:.6g}, "
+                    f"error={probability['compton_error']:.6g}"
+                )
+
+            if probability_only:
+                continue
 
             # ================
             # Plotting section
@@ -648,6 +684,23 @@ if __name__ == "__main__":
         help="Enable debug mode to print MC true processes into the output file."
     )
     parser.add_argument(
+        "--probability-csv",
+        type=str,
+        default=None,
+        help="Append the CO/PA probability estimate for each input file to this CSV."
+    )
+    parser.add_argument(
+        "--energy-bin",
+        type=str,
+        default=None,
+        help="Energy-bin label to write to the probability CSV."
+    )
+    parser.add_argument(
+        "--probability-only",
+        action="store_true",
+        help="Skip all plots after writing the CO/PA probability estimate."
+    )
+    parser.add_argument(
         "-3c", "--three-class",
         action="store_true",
         dest="three_class",
@@ -694,5 +747,8 @@ if __name__ == "__main__":
         rf=None if args.pca is not None else rf_path,
         lookup_path=args.pca,
         debug=args.debug,
-        three_class=args.three_class
+        three_class=args.three_class,
+        probability_csv=args.probability_csv,
+        energy_bin=args.energy_bin,
+        probability_only=args.probability_only,
     )

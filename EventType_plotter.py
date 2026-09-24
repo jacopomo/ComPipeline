@@ -2,6 +2,36 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 import numpy as np
 
+def estimate_compton_pair_probability(compton_count, pair_count):
+    """Estimate Compton/Pair probabilities and binomial standard errors.
+
+    Only CO and PA events are included in the sample size. Other classifier
+    outcomes, such as PH, MU, and UN, are intentionally excluded.
+    """
+    total_count = compton_count + pair_count
+    if total_count <= 0:
+        return {
+            "compton_probability": np.nan,
+            "compton_error": np.nan,
+            "pair_probability": np.nan,
+            "pair_error": np.nan,
+            "compton_count": compton_count,
+            "pair_count": pair_count,
+            "total_count": total_count,
+        }
+
+    compton_probability = compton_count / total_count
+    error = np.sqrt(compton_probability * (1 - compton_probability) / total_count)
+    return {
+        "compton_probability": compton_probability,
+        "compton_error": error,
+        "pair_probability": 1 - compton_probability,
+        "pair_error": error,
+        "compton_count": compton_count,
+        "pair_count": pair_count,
+        "total_count": total_count,
+    }
+
 def plot_type_classification_comparison(true_by_category, miss_by_category, all_by_category, output_path, xlabel, title, bins=50, log_y=True, categories=None):
     """Create a 2x2 comparison layout with counts and misclassification ratio panels."""
 

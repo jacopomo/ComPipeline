@@ -79,6 +79,14 @@ Default: None
 ### `--debug`
 Adds the true MC process label (`MC` field) to each event in the output `.etp` file, read from the simulation's interaction records. Useful for comparing classifier output against ground truth.
 
+### `--energy-probability-lookup`
+Path to the CSV lookup table containing the energy-dependent Compton/Pair probabilities. The default is `lookup_table/compton_pair_probabilities.csv` in this repository.
+
+### `--no-energy-dependence`
+Disable energy-dependent probability combination for the two-class model and use the original PointNet-only binary behavior. Without this flag, energy dependence is enabled by default.
+
+Energy dependence is automatically disabled with `--three-class`, regardless of whether `--no-energy-dependence` is passed. The three-class model is therefore independent of this option.
+
 ---
 
 ## Output format
@@ -114,3 +122,45 @@ With debug output:
 ```bash
 python3 EventType.py -i ./mini_test.sim -o . -g ..../Geometry/ComPair_23/ComPair23.geo.setup -m PointNetModels/test_torch_model_params_final_26-06.pth --debug
 ```
+
+Two-class model with a custom energy lookup table:
+```bash
+python3 EventType_withhisto.py -i ./mini_test.sim -o ./output_etp \
+	-g ../Geometry/ComPair_23/ComPair23.geo.setup \
+	-m PointNetModels/test_torch_model_params_train_2C_nhits2.pth \
+	--energy-probability-lookup lookup_table/compton_pair_probabilities_HE.csv
+```
+
+Three-class model with energy dependence automatically disabled:
+```bash
+python3 EventType_withhisto.py -i ./mini_test.sim -o ./output_etp \
+	-g ../Geometry/ComPair_23/ComPair23.geo.setup \
+	-m PointNetModels/test_torch_model_params_train_3C_nhits2.pth \
+	--three-class
+```
+
+### SIGNAL MC-process probability runner
+
+To process the configured one-MeV simulation bins and create one CSV row per
+bin, run:
+
+```bash
+python3 lookup_table/probability_runner.py
+```
+
+This mode does not use `--debug` and does not generate plots. For each input
+file, it counts all events classified as `SIGNAL`, then uses the original MC
+process label of those events to calculate:
+
+```text
+P(COMP) = COMP_SIGNAL_count / signal_count
+P(PAIR) = PAIR_SIGNAL_count / signal_count
+P(PHOT) = PHOT_SIGNAL_count / signal_count
+```
+
+The CSV's `mean_deposited_energy` column contains the average tracker plus
+calorimeter deposited energy, in MeV, across events classified as `SIGNAL`.
+The remaining columns contain the three probabilities, their MC counts, and
+`signal_count`. The second-layer predicted label is not used for this table.
+Unresolved or untracked MC processes remain in `signal_count`, so the three
+probabilities do not necessarily sum to one.

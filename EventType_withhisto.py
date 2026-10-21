@@ -6,8 +6,8 @@ import numpy as np
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter import estimate_compton_pair_probability, plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
-from EventClassifierPipeline import EventClassifierPipeline
+from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
+from EventClassifierPipeline import EventClassifierPipeline, csv_file as DEFAULT_ENERGY_LOOKUP_PATH
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
 
@@ -43,7 +43,7 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
 
         # --- metrics: per (true_process, L1 status, L2 label) feature store ---
         # Only store metrics for the three MC processes we care about (COMP, PAIR, PHOT) not RAYL!
-        if mc_process in metrics: 
+        if mc_process in metrics:
 
             # Get the info (features)
             ia_e = event.GetIAAt(0).GetSecondaryEnergy() / 1000.0  # keV -> MeV
@@ -90,11 +90,18 @@ def record_debug_info(event, status, event_type, metrics, confusion_matrix, mc_m
     # Return the true MC process string (or "UNKNOWN") for logging in the .etp output file.
     return mc_process
 
+
+def get_mc_process(event):
+    """Return the first-interaction MC process, or UNKNOWN if unresolved."""
+    if event.GetNIAs() > 1:
+        return str(event.GetIAAt(1).GetProcess().Data())
+    return "UNKNOWN"
+
 # ====================================================================================
 # Main function to process input files, classify events, and generate output and plots
 # ====================================================================================
 
-def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False, probability_csv=None, energy_bin=None, probability_only=False):
+def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False, probability_csv=None, energy_bin=None, probability_only=False, energy_probability_lookup_path=DEFAULT_ENERGY_LOOKUP_PATH, use_energy_dependent_probability=True):
 
     # Global MEGAlib initialization
     G = M.MGlobal()
@@ -126,7 +133,15 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         return
 
     # Initiate the pipeline object
-    pipeline = EventClassifierPipeline(model_traced, onlyACDVeto=onlyACDVeto, random_forest_path=rf, lookup_path=lookup_path, three_class=three_class)
+    pipeline = EventClassifierPipeline(
+        model_traced,
+        onlyACDVeto=onlyACDVeto,
+        random_forest_path=rf,
+        lookup_path=lookup_path,
+        three_class=three_class,
+        energy_probability_lookup_path=energy_probability_lookup_path,
+        use_energy_dependent_probability=use_energy_dependent_probability,
+    )
     path_out_dir = Path(output_dir)
     path_out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -194,7 +209,8 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         # These will store the probabilities for each event, indexed by their respective states.
         prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
-        classification_counts = {state: 0 for state in states2}
+        signal_mc_counts = {process: 0 for process in mc_processes}
+        signal_count = 0
         signal_reconstructed_energy = []
         signal_incident_energy = []
         measured_energy_by_process = {proc: [] for proc in mc_processes}
@@ -248,7 +264,16 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     # Only the SIGNAL events reach L2, so we only call type_of_signal() for those. 
                     # MU and UN events are never classified further, and their "event_type" is just their L1 status.
                     if status == "SIGNAL":
-                        signal_reconstructed_energy.append(Event.GetTotalEnergyDeposit() / 1000.0)
+                        signal_count += 1
+                        mc_process = get_mc_process(Event)
+                        if mc_process in signal_mc_counts:
+                            signal_mc_counts[mc_process] += 1
+                        deposited_energy = 0.0
+                        for detector_id in (1, 2):
+                            hit_data = pipeline.extract_hit_data(Event, detId=detector_id)
+                            if hit_data is not None:
+                                deposited_energy += hit_data[0, 3, :].sum().item()
+                        signal_reconstructed_energy.append(deposited_energy / 1000.0)
                         signal_incident_energy.append(Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0)
                         # LAYER 2 — only run for events that passed L1 as signal.
                         event_type, probability = pipeline.type_of_signal(Event, debug=debug, log_file=log_file)
@@ -260,9 +285,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                         # However, prob_l2 never gets populated with these events. 
                         event_type, probability = status, prob_bkg
 
-                    if event_type in classification_counts:
-                        classification_counts[event_type] += 1
-                    
                     t_classify += time.perf_counter() - t0
 
                     t0 = time.perf_counter()
@@ -320,31 +342,45 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 log_file.close()
 
             if probability_csv is not None:
-                probability = estimate_compton_pair_probability(
-                    classification_counts["CO"],
-                    classification_counts["PA"],
-                )
+                process_probabilities = {
+                    process: signal_mc_counts[process] / signal_count
+                    if signal_count > 0 else 0.0
+                    for process in mc_processes
+                }
                 csv_path = Path(probability_csv)
                 csv_path.parent.mkdir(parents=True, exist_ok=True)
                 write_header = not csv_path.exists() or csv_path.stat().st_size == 0
                 with csv_path.open("a", newline="") as csv_file:
                     writer = csv.DictWriter(csv_file, fieldnames=[
-                        "energy_bin",
+                        "mean_deposited_energy",
                         "compton_probability",
-                        "compton_error",
                         "pair_probability",
-                        "pair_error",
+                        "photoelectric_probability",
                         "compton_count",
                         "pair_count",
-                        "total_count",
+                        "photoelectric_count",
+                        "signal_count",
                     ])
                     if write_header:
                         writer.writeheader()
-                    writer.writerow({"energy_bin": energy_bin, **probability})
+                    writer.writerow({
+                        "mean_deposited_energy": (
+                            float(np.mean(signal_reconstructed_energy))
+                            if signal_reconstructed_energy else ""
+                        ),
+                        "compton_probability": process_probabilities["COMP"],
+                        "pair_probability": process_probabilities["PAIR"],
+                        "photoelectric_probability": process_probabilities["PHOT"],
+                        "compton_count": signal_mc_counts["COMP"],
+                        "pair_count": signal_mc_counts["PAIR"],
+                        "photoelectric_count": signal_mc_counts["PHOT"],
+                        "signal_count": signal_count,
+                    })
                 print(
-                    f"[OK] CO={probability['compton_probability']:.6g}, "
-                    f"PA={probability['pair_probability']:.6g}, "
-                    f"error={probability['compton_error']:.6g}"
+                    f"[OK] SIGNAL={signal_count}, "
+                    f"COMP={process_probabilities['COMP']:.6g}, "
+                    f"PAIR={process_probabilities['PAIR']:.6g}, "
+                    f"PHOT={process_probabilities['PHOT']:.6g}"
                 )
 
             if probability_only:
@@ -693,12 +729,24 @@ if __name__ == "__main__":
         "--energy-bin",
         type=str,
         default=None,
-        help="Energy-bin label to write to the probability CSV."
+        help="Deprecated; the probability CSV energy is calculated from SIGNAL events."
     )
     parser.add_argument(
         "--probability-only",
         action="store_true",
         help="Skip all plots after writing the CO/PA probability estimate."
+    )
+    parser.add_argument(
+        "--energy-probability-lookup",
+        type=str,
+        default=DEFAULT_ENERGY_LOOKUP_PATH,
+        help="CSV lookup table for energy-dependent CO/PA probabilities. "
+             f"Default: {DEFAULT_ENERGY_LOOKUP_PATH}",
+    )
+    parser.add_argument(
+        "--no-energy-dependence",
+        action="store_true",
+        help="Disable energy-dependent CO/PA probability combination for the two-class model.",
     )
     parser.add_argument(
         "-3c", "--three-class",
@@ -710,6 +758,10 @@ if __name__ == "__main__":
 
     # Parse the arguments from command line
     args = parser.parse_args()
+
+    use_energy_dependent_probability = (
+        not args.three_class and not args.no_energy_dependence
+    )
 
     DEFAULT_RF_PATH = "./RandomForest/vega_model.skops"
     DEFAULT_MODEL_PATH_2C = "./PointNetModels/test_torch_model_params_2c_nhits2.pth"
@@ -751,4 +803,6 @@ if __name__ == "__main__":
         probability_csv=args.probability_csv,
         energy_bin=args.energy_bin,
         probability_only=args.probability_only,
+        energy_probability_lookup_path=args.energy_probability_lookup,
+        use_energy_dependent_probability=use_energy_dependent_probability,
     )

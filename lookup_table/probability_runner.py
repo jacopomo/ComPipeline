@@ -14,16 +14,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 #ENERGIES = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-ENERGIES = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-# ENERGIES = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+#ENERGIES = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+ENERGIES = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
 
 SCRIPT = "EventType_withhisto.py"
 GEOMETRY = "Geometry/ComPair_23/ComPair23.geo.setup"
 MODEL = "PointNetModels/test_torch_model_params_train_2C_nhits2.pth"
 
-INPUT_TEMPLATE = "/scratch/ComPair/Sim_1MeV_50MeV_forMLtrain_ComPair23/E_ME/E_{energy1}MeV_{energy2}MeV/ComPair23_{energy1}MeV_{energy2}MeV_ADCveto_Comp.p1.inc1.id1.sim.gz"
+INPUT_TEMPLATE = "/scratch/ComPair/Sim_1MeV_50MeV_forMLtrain_ComPair23/E_HE/E_{energy1}MeV_{energy2}MeV/ComPair23_{energy1}MeV_{energy2}MeV_ADCveto_Comp.p1.inc1.id1.sim.gz"
 OUTPUT_TEMPLATE = "output_etp/E_{energy1}MeV_{energy2}MeV/"
-CSV_OUTPUT = Path("output_etp/compton_pair_probabilities_ME.csv")
+CSV_OUTPUT = Path("output_etp/compton_pair_probabilities_HE_TEST.csv")
 # Additional classifier flags can be added here, for example:
 # EXTRA_FLAGS = ["--disable-onlyacd", "-rf", "RandomForest/vega_model.skops"]
 EXTRA_FLAGS = []
@@ -38,8 +38,6 @@ RESET_CSV = True
 def build_command(energy):
     input_path = INPUT_TEMPLATE.format(energy1=energy, energy2=energy+1)
     output_path = OUTPUT_TEMPLATE.format(energy1=energy, energy2=energy+1)
-    energy_bin = f"{energy}-{energy + 1}MeV"
-
     command = [
         sys.executable,
         SCRIPT,
@@ -49,7 +47,6 @@ def build_command(energy):
         "-o", output_path,
         "--probability-only",
         "--probability-csv", str(CSV_OUTPUT),
-        "--energy-bin", energy_bin,
     ] + EXTRA_FLAGS
     return command, input_path, output_path
 

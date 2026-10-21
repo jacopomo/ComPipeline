@@ -8,7 +8,11 @@ csv_file = "compton_pair_probabilities.csv"
 df = pd.read_csv(csv_file)
 
 # Extract columns
-energy = df["energy_bin"]
+energy = (
+    df["mean_deposited_energy"]
+    if "mean_deposited_energy" in df.columns
+    else df["energy_bin"]
+)
 compton = df["compton_probability"]
 pair = df["pair_probability"]
 phot = df["photoelectric_probability"]

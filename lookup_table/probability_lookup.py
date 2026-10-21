@@ -8,10 +8,13 @@ class ProbabilityLookup:
     def __init__(self, csv_path):
         df = pd.read_csv(csv_path)
 
-        self.energy = np.asarray(
-            [self._energy_bin_center(value) for value in df["energy_bin"]],
-            dtype=float,
-        )
+        if "mean_deposited_energy" in df.columns:
+            self.energy = df["mean_deposited_energy"].to_numpy(dtype=float)
+        else:
+            self.energy = np.asarray(
+                [self._energy_bin_center(value) for value in df["energy_bin"]],
+                dtype=float,
+            )
         self.compton_probability = df["compton_probability"].to_numpy(dtype=float)
         self.pair_probability = df["pair_probability"].to_numpy(dtype=float)
 

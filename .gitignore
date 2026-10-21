@@ -3,6 +3,7 @@
 /output_etp_histo
 /simgz
 /backgrounds
+/pandas_tests
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

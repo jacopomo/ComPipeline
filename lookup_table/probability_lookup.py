@@ -8,6 +8,11 @@ class ProbabilityLookup:
     def __init__(self, csv_path):
         df = pd.read_csv(csv_path)
 
+        if "total_count" in df.columns:
+            df = df.loc[df["total_count"] > 0]
+            if df.empty:
+                raise ValueError(f"Probability lookup table {csv_path!r} has no populated energy bins")
+
         if "mean_deposited_energy" in df.columns:
             self.energy = df["mean_deposited_energy"].to_numpy(dtype=float)
         else:

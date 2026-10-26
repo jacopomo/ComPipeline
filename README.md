@@ -139,28 +139,21 @@ python3 EventType_withhisto.py -i ./mini_test.sim -o ./output_etp \
 	--three-class
 ```
 
-### SIGNAL MC-process probability runner
+### Deposited-energy MC-process probability CSV
 
-To process the configured one-MeV simulation bins and create one CSV row per
-bin, run:
+For a simulation with photons uniformly distributed from 0 to 50 MeV, create
+the process probabilities in 1 MeV deposited-energy bins with:
 
 ```bash
-python3 lookup_table/probability_runner.py
+python3 EventType_withhisto.py -i <uniform_0_to_50MeV.sim> -o ./output_etp \
+    -g <geometry> -m <model> \
+    --probability-csv ./output_etp/process_probabilities.csv \
+    --probability-only
 ```
 
-This mode does not use `--debug` and does not generate plots. For each input
-file, it counts all events classified as `SIGNAL`, then uses the original MC
-process label of those events to calculate:
-
-```text
-P(COMP) = COMP_SIGNAL_count / signal_count
-P(PAIR) = PAIR_SIGNAL_count / signal_count
-P(PHOT) = PHOT_SIGNAL_count / signal_count
-```
-
-The CSV's `mean_deposited_energy` column contains the average tracker plus
-calorimeter deposited energy, in MeV, across events classified as `SIGNAL`.
-The remaining columns contain the three probabilities, their MC counts, and
-`signal_count`. The second-layer predicted label is not used for this table.
-Unresolved or untracked MC processes remain in `signal_count`, so the three
-probabilities do not necessarily sum to one.
+The CSV contains the center of each 1 MeV bin from 0–50 MeV, the true-MC
+Compton/Pair/Photoelectric counts, the total event count, and each process
+count divided by the total count in that deposited-energy bin. Events with
+other or unresolved MC processes contribute to `total_count` but not to the
+three process counts. The CSV is written without requiring `--debug`; when
+multiple simulation files are given, their counts are combined.

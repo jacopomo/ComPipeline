@@ -1,3 +1,6 @@
+import csv
+from pathlib import Path
+
 import matplotlib.pyplot as plt 
 from matplotlib.colors import LogNorm
 import numpy as np
@@ -31,6 +34,49 @@ def estimate_compton_pair_probability(compton_count, pair_count):
         "pair_count": pair_count,
         "total_count": total_count,
     }
+
+def write_process_probability_csv(bin_counts, bin_edges, output_path):
+    """Write MC process counts and probabilities for measured-energy bins."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "energy_bin",
+        "compton_count",
+        "pair_count",
+        "photoelectric_count",
+        "total_count",
+        "compton_probability",
+        "pair_probability",
+        "photoelectric_probability",
+        "compton_err",
+        "pair_err",
+        "phot_err",
+    ]
+
+    with output_path.open("w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for bin_index, counts in enumerate(bin_counts):
+            total_count = int(counts[3])
+            probabilities = counts[:3] / total_count if total_count else np.zeros(3)
+            errors = (
+                np.sqrt(probabilities * (1 - probabilities) / total_count)
+                if total_count
+                else np.full(3, np.nan)
+            )
+            writer.writerow({
+                "energy_bin": 0.5 * (bin_edges[bin_index] + bin_edges[bin_index + 1]),
+                "compton_count": int(counts[0]),
+                "pair_count": int(counts[1]),
+                "photoelectric_count": int(counts[2]),
+                "total_count": total_count,
+                "compton_probability": probabilities[0],
+                "pair_probability": probabilities[1],
+                "photoelectric_probability": probabilities[2],
+                "compton_err": errors[0],
+                "pair_err": errors[1],
+                "phot_err": errors[2],
+            })
 
 def plot_type_classification_comparison(true_by_category, miss_by_category, all_by_category, output_path, xlabel, title, bins=50, log_y=True, categories=None):
     """Create a 2x2 comparison layout with counts and misclassification ratio panels."""

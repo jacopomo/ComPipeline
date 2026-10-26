@@ -1,12 +1,20 @@
 import argparse
-import csv
 from tqdm import tqdm
 import time
 import numpy as np
 
 import ROOT as M
 from pathlib import Path
-from EventType_plotter import plot_type_classification_comparison, plot_bar_counts, plot_overlaid_probabilities, plot_stacked_energy_spectrum, plot_confusion_matrix, plot_energy_response_hist, plot_process_probability_vs_measured_energy
+from EventType_plotter import (
+    plot_type_classification_comparison,
+    plot_bar_counts,
+    plot_overlaid_probabilities,
+    plot_stacked_energy_spectrum,
+    plot_confusion_matrix,
+    plot_energy_response_hist,
+    plot_process_probability_vs_measured_energy,
+    write_process_probability_csv,
+)
 from EventClassifierPipeline import EventClassifierPipeline, csv_file as DEFAULT_ENERGY_LOOKUP_PATH
 
 M.gSystem.Load("$(MEGALIB)/lib/libMEGAlib.so")
@@ -101,7 +109,7 @@ def get_mc_process(event):
 # Main function to process input files, classify events, and generate output and plots
 # ====================================================================================
 
-def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False, probability_csv=None, energy_bin=None, probability_only=False, energy_probability_lookup_path=DEFAULT_ENERGY_LOOKUP_PATH, use_energy_dependent_probability=True):
+def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, rf=None, lookup_path=None, debug=False, three_class=False, probability_csv=None, probability_only=False, energy_probability_lookup_path=DEFAULT_ENERGY_LOOKUP_PATH, use_energy_dependent_probability=True):
 
     # Global MEGAlib initialization
     G = M.MGlobal()
@@ -131,6 +139,10 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
     if not files_to_process:
         print(f"No .sim or .sim.gz files found in '{input_path}'. Exiting.")
         return
+
+    probability_bin_edges = np.arange(0, 51, 1)
+    probability_bin_counts = np.zeros((50, 4), dtype=int)
+    probability_process_indices = {"COMP": 0, "PAIR": 1, "PHOT": 2}
 
     # Initiate the pipeline object
     pipeline = EventClassifierPipeline(
@@ -209,8 +221,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
         # These will store the probabilities for each event, indexed by their respective states.
         prob_l1 = {state: [] for state in states1} # UN, MU, SIGNAL
         prob_l2 = {state: [] for state in states2} # PH, PA, CO, UN
-        signal_mc_counts = {process: 0 for process in mc_processes}
-        signal_count = 0
         signal_reconstructed_energy = []
         signal_incident_energy = []
         measured_energy_by_process = {proc: [] for proc in mc_processes}
@@ -241,14 +251,24 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
 
                     M.SetOwnership(Event, True)
                     t_read += time.perf_counter() - t0
+
+                    if debug or probability_csv is not None:
+                        measured_energy = Event.GetTotalEnergyDeposit() / 1000.0
+                        if probability_csv is not None:
+                            if np.isfinite(measured_energy) and 0 <= measured_energy <= 50:
+                                bin_index = min(int(measured_energy), 49)
+                                probability_bin_counts[bin_index, 3] += 1
+                                mc_process = get_mc_process(Event)
+                                process_index = probability_process_indices.get(mc_process)
+                                if process_index is not None:
+                                    probability_bin_counts[bin_index, process_index] += 1
+                        if debug:
+                            all_measured_energy.append(measured_energy)
+                            if Event.GetNIAs() > 0:
+                                all_incident_energy.append(Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0)
                     
                     i += 1
                     id_event = Event.GetID()
-
-                    if debug:
-                        all_measured_energy.append(Event.GetTotalEnergyDeposit() / 1000.0)
-                        if Event.GetNIAs() > 0:
-                            all_incident_energy.append(Event.GetIAAt(0).GetSecondaryEnergy() / 1000.0)
                     
                     t0 = time.perf_counter()
 
@@ -264,10 +284,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     # Only the SIGNAL events reach L2, so we only call type_of_signal() for those. 
                     # MU and UN events are never classified further, and their "event_type" is just their L1 status.
                     if status == "SIGNAL":
-                        signal_count += 1
-                        mc_process = get_mc_process(Event)
-                        if mc_process in signal_mc_counts:
-                            signal_mc_counts[mc_process] += 1
                         deposited_energy = 0.0
                         for detector_id in (1, 2):
                             hit_data = pipeline.extract_hit_data(Event, detId=detector_id)
@@ -341,48 +357,6 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                 log_file.write(f"\nEnd of problems, total events processed: {i}\n")
                 log_file.close()
 
-            if probability_csv is not None:
-                process_probabilities = {
-                    process: signal_mc_counts[process] / signal_count
-                    if signal_count > 0 else 0.0
-                    for process in mc_processes
-                }
-                csv_path = Path(probability_csv)
-                csv_path.parent.mkdir(parents=True, exist_ok=True)
-                write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-                with csv_path.open("a", newline="") as csv_file:
-                    writer = csv.DictWriter(csv_file, fieldnames=[
-                        "mean_deposited_energy",
-                        "compton_probability",
-                        "pair_probability",
-                        "photoelectric_probability",
-                        "compton_count",
-                        "pair_count",
-                        "photoelectric_count",
-                        "signal_count",
-                    ])
-                    if write_header:
-                        writer.writeheader()
-                    writer.writerow({
-                        "mean_deposited_energy": (
-                            float(np.mean(signal_reconstructed_energy))
-                            if signal_reconstructed_energy else ""
-                        ),
-                        "compton_probability": process_probabilities["COMP"],
-                        "pair_probability": process_probabilities["PAIR"],
-                        "photoelectric_probability": process_probabilities["PHOT"],
-                        "compton_count": signal_mc_counts["COMP"],
-                        "pair_count": signal_mc_counts["PAIR"],
-                        "photoelectric_count": signal_mc_counts["PHOT"],
-                        "signal_count": signal_count,
-                    })
-                print(
-                    f"[OK] SIGNAL={signal_count}, "
-                    f"COMP={process_probabilities['COMP']:.6g}, "
-                    f"PAIR={process_probabilities['PAIR']:.6g}, "
-                    f"PHOT={process_probabilities['PHOT']:.6g}"
-                )
-
             if probability_only:
                 continue
 
@@ -448,6 +422,7 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     probability_path,
                     incident_energy_by_process=incident_energy_by_process,
                     all_incident_energy=all_incident_energy,
+                    bins=probability_bin_edges,
                 )
                 print(f"[OK] Process probability plot saved to: {probability_path}")
 
@@ -660,6 +635,14 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     )
                     print(f"[OK] {d['title']} saved to: {plot_path}")
 
+    if probability_csv is not None:
+        write_process_probability_csv(
+            probability_bin_counts,
+            probability_bin_edges,
+            probability_csv,
+        )
+        print(f"[OK] Deposited-energy process probabilities saved to: {probability_csv}")
+
 # =========================
 # Main function and parsing
 # =========================
@@ -723,18 +706,12 @@ if __name__ == "__main__":
         "--probability-csv",
         type=str,
         default=None,
-        help="Append the CO/PA probability estimate for each input file to this CSV."
-    )
-    parser.add_argument(
-        "--energy-bin",
-        type=str,
-        default=None,
-        help="Deprecated; the probability CSV energy is calculated from SIGNAL events."
+        help="Write true-MC process counts and probabilities by 1 MeV deposited-energy bin to this CSV."
     )
     parser.add_argument(
         "--probability-only",
         action="store_true",
-        help="Skip all plots after writing the CO/PA probability estimate."
+        help="Skip all plots after collecting probability CSV counts."
     )
     parser.add_argument(
         "--energy-probability-lookup",
@@ -801,7 +778,6 @@ if __name__ == "__main__":
         debug=args.debug,
         three_class=args.three_class,
         probability_csv=args.probability_csv,
-        energy_bin=args.energy_bin,
         probability_only=args.probability_only,
         energy_probability_lookup_path=args.energy_probability_lookup,
         use_energy_dependent_probability=use_energy_dependent_probability,

@@ -153,7 +153,9 @@ python3 EventType_withhisto.py -i <uniform_0_to_50MeV.sim> -o ./output_etp \
 
 The CSV contains the center of each 1 MeV bin from 0–50 MeV, the true-MC
 Compton/Pair/Photoelectric counts, the total event count, and each process
-count divided by the total count in that deposited-energy bin. Events with
-other or unresolved MC processes contribute to `total_count` but not to the
-three process counts. The CSV is written without requiring `--debug`; when
-multiple simulation files are given, their counts are combined.
+count divided by the total count in that deposited-energy bin. Only events
+classified as `SIGNAL` by L1 (passing the ACD veto and any enabled background
+classifier) contribute. SIGNAL events with other or unresolved MC processes
+contribute to `total_count` but not to the three process counts. The CSV is
+written without requiring `--debug`; when multiple simulation files are given,
+their counts are combined.

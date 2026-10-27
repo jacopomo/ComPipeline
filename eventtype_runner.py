@@ -24,9 +24,9 @@ GEOMETRY = "../Geometry/ComPair_23/ComPair23.geo.setup"
 MODEL = "./PointNetModels/test_torch_model_params_train_2C_nhits2.pth"
 
 INPUT_TEMPLATE = "simgz/grant_single_energies/ComPair2_{energy}keV.inc1.id1.sim.gz"
-OUTPUT_TEMPLATE = "output_etp/grant_single_energies/nhits2/{energy}keV/"
+OUTPUT_TEMPLATE = "output_etp/grant_single_energies/nhits2/edep/{energy}keV/"
 
-EXTRA_FLAGS = ["--debug"]
+EXTRA_FLAGS = ["--debug", "--energy-probability-lookup", "lookup_table/1M_1keV_50MeV.csv"]
 
 # Set to True to just print the commands without running them (dry run)
 DRY_RUN = False

@@ -252,16 +252,9 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     M.SetOwnership(Event, True)
                     t_read += time.perf_counter() - t0
 
+                    # Keep the measured energy available for debug plots, which include all events.
                     if debug or probability_csv is not None:
                         measured_energy = Event.GetTotalEnergyDeposit() / 1000.0
-                        if probability_csv is not None:
-                            if np.isfinite(measured_energy) and 0 <= measured_energy <= 50:
-                                bin_index = min(int(measured_energy), 49)
-                                probability_bin_counts[bin_index, 3] += 1
-                                mc_process = get_mc_process(Event)
-                                process_index = probability_process_indices.get(mc_process)
-                                if process_index is not None:
-                                    probability_bin_counts[bin_index, process_index] += 1
                         if debug:
                             all_measured_energy.append(measured_energy)
                             if Event.GetNIAs() > 0:
@@ -276,6 +269,16 @@ def main(input_path, output_dir, geometry_name, model_traced, onlyACDVeto=True, 
                     # status can be "SIGNAL", "MU", or "UN".
                     # prob_bkg is the probability of that status.
                     status, prob_bkg = pipeline.signal_background_classifier(Event, debug=debug, onlyACDVeto=onlyACDVeto, log_file=log_file)
+
+                    # Build the probability lookup only from events accepted as SIGNAL by L1.
+                    if probability_csv is not None and status == "SIGNAL":
+                        if np.isfinite(measured_energy) and 0 <= measured_energy <= 50:
+                            bin_index = min(int(measured_energy), 49)
+                            probability_bin_counts[bin_index, 3] += 1
+                            mc_process = get_mc_process(Event)
+                            process_index = probability_process_indices.get(mc_process)
+                            if process_index is not None:
+                                probability_bin_counts[bin_index, process_index] += 1
 
                     # prob_l1 gets populated HERE, for every single event, regardless of --debug.
                     if status in prob_l1:
@@ -706,7 +709,7 @@ if __name__ == "__main__":
         "--probability-csv",
         type=str,
         default=None,
-        help="Write true-MC process counts and probabilities by 1 MeV deposited-energy bin to this CSV."
+        help="Write L1-SIGNAL true-MC process counts and probabilities by 1 MeV deposited-energy bin to this CSV."
     )
     parser.add_argument(
         "--probability-only",
